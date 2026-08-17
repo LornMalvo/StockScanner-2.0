@@ -51,9 +51,12 @@ def render() -> None:
     if not tickers:
         st.warning("Introduce al menos un ticker.")
         return
-    if len(tickers) > 20:
-        st.warning("Máximo 20 tickers por lote para no agotar las cuotas de las APIs.")
-        tickers = tickers[:20]
+    if len(tickers) > 10:
+        st.warning(
+            "Máximo 10 tickers por lote. Cada análisis implica varias peticiones a Yahoo "
+            "Finance y lotes mayores disparan el límite por IP."
+        )
+        tickers = tickers[:10]
 
     filas = []
     barra = st.progress(0.0, text="Analizando…")

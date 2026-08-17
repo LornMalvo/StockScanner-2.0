@@ -6,6 +6,8 @@ logo centrado, navbar horizontal debajo y el contenido de la sección activa.
 
 from __future__ import annotations
 
+import base64
+from functools import lru_cache
 from pathlib import Path
 
 import streamlit as st
@@ -31,19 +33,33 @@ VISTAS = {
 }
 
 
+@lru_cache(maxsize=1)
+def _logo_base64() -> str | None:
+    """Logo incrustado en la propia página.
+
+    Se incrusta en lugar de usar `st.image` porque este alinea la imagen a la
+    izquierda de su columna y no permite centrarla con precisión; con una
+    etiqueta <img> propia se controla ancho y centrado desde CSS.
+    """
+    if not RUTA_LOGO.exists():
+        return None
+    return base64.b64encode(RUTA_LOGO.read_bytes()).decode("ascii")
+
+
 def cabecera() -> None:
-    izq, centro, der = st.columns([1, 2, 1])
-    with izq:
-        st.markdown('<div class="ss-home">Home</div>', unsafe_allow_html=True)
-    with centro:
-        if RUTA_LOGO.exists():
-            st.image(str(RUTA_LOGO), use_container_width=True)
-        else:
-            st.markdown(
-                f'<div style="text-align:center"><h2>{APP_NOMBRE}</h2>'
-                f"<small>{APP_CLAIM}</small></div>",
-                unsafe_allow_html=True,
-            )
+    st.markdown('<div class="ss-home">Home</div>', unsafe_allow_html=True)
+    logo = _logo_base64()
+    if logo:
+        st.markdown(
+            f'<img class="ss-logo" src="data:image/png;base64,{logo}" alt="{APP_NOMBRE}">',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f'<div style="text-align:center"><h2>{APP_NOMBRE}</h2>'
+            f"<small>{APP_CLAIM}</small></div>",
+            unsafe_allow_html=True,
+        )
 
 
 def navbar() -> str:

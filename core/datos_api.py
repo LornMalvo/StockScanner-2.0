@@ -9,6 +9,7 @@ Principios:
 
 from __future__ import annotations
 
+import time
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -22,22 +23,22 @@ from utils.formato import es_valido, num, primero_valido
 SEC_UA = "StockScanner/1.0 (contacto: tu-email-real@dominio.com)"
 FINNHUB_BASE = "https://finnhub.io/api/v1"
 
+# Intervalo mínimo entre peticiones a Yahoo. Yahoo limita por IP y en
+# Streamlit Community Cloud la IP es compartida con otras apps, así que el
+# presupuesto real de peticiones es mucho menor de lo que parece.
+INTERVALO_MIN_YAHOO = 0.4
+REINTENTOS_YAHOO = 3
+TTL_FALLO = 120  # un fallo se recuerda 2 min, no una hora
+
 
 @st.cache_resource(show_spinner=False)
 def _sesion_yfinance():
     """Sesión con huella de navegador real para las peticiones a Yahoo Finance.
 
     Yahoo bloquea o limita muy agresivamente las peticiones que no parecen
-    venir de un navegador, algo que afecta sobre todo a IPs compartidas como
-    las de Streamlit Community Cloud. `yf.Ticker().get_info()` (endpoint
-    quoteSummary) es el más sensible a esto; `history()` y los estados
-    financieros suelen sobrevivir con el cliente por defecto, lo que explica
-    que el precio y los estados lleguen pero el diccionario `info` no.
-
-    Se usa `curl_cffi` con `impersonate="chrome"` para replicar las cabeceras
-    TLS/HTTP de un Chrome real. Si el paquete no está instalado, se cae de
-    vuelta a una sesión de requests normal (mejor que nada, pero más
-    vulnerable al bloqueo).
+    venir de un navegador. Se usa `curl_cffi` con `impersonate="chrome"` para
+    replicar las cabeceras TLS/HTTP de un Chrome real; si el paquete no está
+    instalado se cae de vuelta a una sesión de requests normal.
     """
     try:
         from curl_cffi import requests as curl_requests
@@ -47,9 +48,79 @@ def _sesion_yfinance():
         return requests.Session()
 
 
+@st.cache_resource(show_spinner=False, max_entries=64)
 def _ticker(simbolo: str) -> yf.Ticker:
-    """Punto único de creación de Ticker: toda petición pasa por la sesión."""
+    """Objeto Ticker reutilizado entre llamadas y entre reruns.
+
+    Importante para el consumo de API: yfinance memoriza en la propia
+    instancia lo que ya ha descargado, así que reutilizar el objeto evita
+    repetir peticiones. Crear un `yf.Ticker` nuevo en cada llamada —como se
+    hacía antes— tiraba esa caché interna a la basura y multiplicaba las
+    peticiones a Yahoo.
+    """
     return yf.Ticker(simbolo, session=_sesion_yfinance())
+
+
+@st.cache_resource(show_spinner=False)
+def _almacen() -> dict:
+    """Caché manual (clave -> (marca_tiempo, valor)) compartida entre reruns.
+
+    No se usa `st.cache_data` para los fundamentales porque cachea también los
+    fallos durante todo el TTL: un único error de rate limit dejaba la ficha
+    vacía durante una hora. Aquí los fallos caducan en TTL_FALLO segundos.
+    """
+    return {}
+
+
+_ULTIMA_PETICION = {"t": 0.0}
+
+
+def _throttle() -> None:
+    """Espacia las peticiones a Yahoo para no disparar el límite por IP."""
+    espera = INTERVALO_MIN_YAHOO - (time.monotonic() - _ULTIMA_PETICION["t"])
+    if espera > 0:
+        time.sleep(espera)
+    _ULTIMA_PETICION["t"] = time.monotonic()
+
+
+def _es_rate_limit(e: Exception) -> bool:
+    texto = f"{type(e).__name__} {e}".lower()
+    return "ratelimit" in texto or "rate limit" in texto or "429" in texto or "too many" in texto
+
+
+def _pedir(fn, intentos: int = REINTENTOS_YAHOO):
+    """Ejecuta una petición a Yahoo con throttle y reintentos escalonados.
+
+    Devuelve (valor, error). Solo reintenta ante rate limit: cualquier otro
+    error se propaga de inmediato porque reintentarlo no lo va a arreglar.
+    """
+    ultimo: Exception | None = None
+    for intento in range(intentos):
+        _throttle()
+        try:
+            return fn(), None
+        except Exception as e:  # noqa: BLE001 - se reporta al llamante
+            ultimo = e
+            if _es_rate_limit(e) and intento < intentos - 1:
+                time.sleep(1.5 * (2**intento))
+                continue
+            break
+    return None, ultimo
+
+
+def _cache_leer(clave: str, ttl: float):
+    registro = _almacen().get(clave)
+    if not registro:
+        return None
+    marca, valor = registro
+    caducidad = TTL_FALLO if isinstance(valor, dict) and "_ss_error" in valor else ttl
+    if time.time() - marca > caducidad:
+        return None
+    return valor
+
+
+def _cache_guardar(clave: str, valor) -> None:
+    _almacen()[clave] = (time.time(), valor)
 
 
 def _clave(nombre: str) -> str | None:
@@ -65,52 +136,56 @@ def _clave(nombre: str) -> str | None:
 @st.cache_data(ttl=TTL_FX, show_spinner=False)
 def obtener_fx_usd_eur() -> float | None:
     """USD -> EUR en tiempo real. None si no se puede resolver."""
-    try:
-        hist = _ticker("EURUSD=X").history(period="5d", interval="1h")
-        if hist.empty:
-            return None
-        eurusd = float(hist["Close"].dropna().iloc[-1])
-        return 1 / eurusd if eurusd > 0 else None
-    except Exception:
+    hist, _ = _pedir(lambda: _ticker("EURUSD=X").history(period="5d", interval="1h"))
+    if hist is None or hist.empty:
         return None
+    try:
+        eurusd = float(hist["Close"].dropna().iloc[-1])
+    except (IndexError, ValueError):
+        return None
+    return 1 / eurusd if eurusd > 0 else None
 
 
 # ==================================================================== yfinance =
-@st.cache_data(ttl=TTL_FUNDAMENTALES, show_spinner=False)
 def obtener_info(ticker: str) -> dict:
-    """Fundamentales de yfinance con dos estrategias y diagnóstico real.
+    """Fundamentales de yfinance, con reintentos y diagnóstico real.
 
-    Se intenta primero `get_info()` y, si llega vacío, la propiedad `.info`
-    (a veces una tiene éxito y la otra no, según el estado del endpoint de
-    Yahoo). Si ambas fallan, se conserva el mensaje de error real en la clave
-    interna `_ss_error` en vez de devolver un diccionario vacío mudo: así la
-    interfaz puede mostrar la causa concreta en lugar de un simple "no
-    disponible" que no ayuda a diagnosticar.
+    Se intenta primero `get_info()` y, si llega vacío, la propiedad `.info`.
+    Si ambas fallan se devuelve `_ss_error` con el motivo concreto, que la
+    interfaz muestra en lugar de un mudo "dato no disponible".
     """
+    clave = f"info:{ticker}"
+    cacheado = _cache_leer(clave, TTL_FUNDAMENTALES)
+    if cacheado is not None:
+        return cacheado
+
     errores: list[str] = []
     t = _ticker(ticker)
-
     for nombre_metodo, obtener in (("get_info()", t.get_info), ("propiedad .info", lambda: t.info)):
-        try:
-            info = obtener()
-            if info and (info.get("longName") or info.get("shortName") or info.get("regularMarketPrice")):
-                return info
-            if info:
-                errores.append(f"{nombre_metodo}: respuesta sin campos de identidad ({len(info)} claves)")
-            else:
-                errores.append(f"{nombre_metodo}: respuesta vacía")
-        except Exception as e:
-            errores.append(f"{nombre_metodo}: {type(e).__name__}: {e}")
+        valor, error = _pedir(obtener)
+        if error is not None:
+            errores.append(f"{nombre_metodo}: {type(error).__name__}: {error}")
+            continue
+        if valor and (
+            valor.get("longName") or valor.get("shortName") or valor.get("regularMarketPrice")
+        ):
+            _cache_guardar(clave, valor)
+            return valor
+        errores.append(
+            f"{nombre_metodo}: respuesta sin campos de identidad"
+            + (f" ({len(valor)} claves)" if valor else " (vacía)")
+        )
 
-    return {"_ss_error": errores}
+    fallo = {"_ss_error": errores}
+    _cache_guardar(clave, fallo)
+    return fallo
 
 
 @st.cache_data(ttl=TTL_PRECIO, show_spinner=False)
 def obtener_historico(ticker: str, periodo: str = "5y", intervalo: str = "1d") -> pd.DataFrame:
-    try:
-        df = _ticker(ticker).history(period=periodo, interval=intervalo, auto_adjust=False)
-    except Exception:
-        return pd.DataFrame()
+    df, _ = _pedir(
+        lambda: _ticker(ticker).history(period=periodo, interval=intervalo, auto_adjust=False)
+    )
     if df is None or df.empty:
         return pd.DataFrame()
     df = df.dropna(subset=["Close"])
@@ -121,36 +196,38 @@ def obtener_historico(ticker: str, periodo: str = "5y", intervalo: str = "1d") -
 
 @st.cache_data(ttl=TTL_PRECIO, show_spinner=False)
 def obtener_precio_actual(ticker: str) -> float | None:
-    try:
-        rapido = _ticker(ticker).fast_info
-        precio = primero_valido(rapido.get("last_price"), rapido.get("regular_market_price"))
-        if precio:
+    """Precio actual: primero `fast_info` (endpoint ligero), luego histórico."""
+    rapido, _ = _pedir(lambda: _ticker(ticker).fast_info)
+    if rapido is not None:
+        try:
+            precio = primero_valido(rapido.get("last_price"), rapido.get("regular_market_price"))
+        except Exception:
+            precio = None
+        if es_valido(precio):
             return precio
-    except Exception:
-        pass
     hist = obtener_historico(ticker, periodo="5d")
     return float(hist["Close"].iloc[-1]) if not hist.empty else None
 
 
 @st.cache_data(ttl=TTL_FUNDAMENTALES, show_spinner=False)
 def obtener_estados_financieros(ticker: str) -> dict:
-    """Cuenta de resultados, balance y flujo de caja (anual y trimestral)."""
-    salida = {
-        "resultados": pd.DataFrame(),
-        "balance": pd.DataFrame(),
-        "flujo_caja": pd.DataFrame(),
-        "resultados_trim": pd.DataFrame(),
+    """Cuenta de resultados, balance y flujo de caja (anual y trimestral).
+
+    Cada propiedad se evalúa una sola vez: `t.income_stmt` dispara descarga la
+    primera vez, y escribirlo dos veces (como en `x if x is not None`)
+    duplicaba innecesariamente el trabajo.
+    """
+    t = _ticker(ticker)
+    campos = {
+        "resultados": lambda: t.income_stmt,
+        "balance": lambda: t.balance_sheet,
+        "flujo_caja": lambda: t.cashflow,
+        "resultados_trim": lambda: t.quarterly_income_stmt,
     }
-    try:
-        t = _ticker(ticker)
-        salida["resultados"] = t.income_stmt if t.income_stmt is not None else pd.DataFrame()
-        salida["balance"] = t.balance_sheet if t.balance_sheet is not None else pd.DataFrame()
-        salida["flujo_caja"] = t.cashflow if t.cashflow is not None else pd.DataFrame()
-        salida["resultados_trim"] = (
-            t.quarterly_income_stmt if t.quarterly_income_stmt is not None else pd.DataFrame()
-        )
-    except Exception:
-        pass
+    salida: dict[str, pd.DataFrame] = {}
+    for nombre, obtener in campos.items():
+        valor, _ = _pedir(obtener, intentos=2)
+        salida[nombre] = valor if isinstance(valor, pd.DataFrame) else pd.DataFrame()
     return salida
 
 
@@ -215,10 +292,7 @@ def obtener_earnings(ticker: str) -> dict:
 
     # --- Respaldo yfinance ------------------------------------------------
     if salida["ultimo"] is None or salida["proxima_fecha"] is None:
-        try:
-            fechas = _ticker(ticker).get_earnings_dates(limit=12)
-        except Exception:
-            fechas = None
+        fechas, _ = _pedir(lambda: _ticker(ticker).get_earnings_dates(limit=12), intentos=2)
         if fechas is not None and not fechas.empty:
             fechas = fechas.copy()
             fechas.index = pd.to_datetime(fechas.index).tz_localize(None)
@@ -268,10 +342,8 @@ def obtener_noticias(ticker: str, limite: int = 5) -> list[dict]:
             )
 
     if len(noticias) < limite:
-        try:
-            crudas = _ticker(ticker).news or []
-        except Exception:
-            crudas = []
+        crudas, _ = _pedir(lambda: _ticker(ticker).news, intentos=2)
+        crudas = crudas or []
         for n in crudas:
             contenido = n.get("content", n)
             url = (
@@ -426,18 +498,27 @@ def obtener_hechos_sec(ticker: str, conceptos: tuple[str, ...] = ()) -> dict:
 
 # ============================================================ agregador único ==
 def obtener_paquete(ticker: str) -> dict:
-    """Recopila en una sola estructura todo lo necesario para el análisis."""
+    """Recopila en una sola estructura todo lo necesario para el análisis.
+
+    Se evita cualquier petición prescindible: el precio solo se pide aparte si
+    no venía ya en `info` o en el histórico, y los datos de SEC EDGAR (8
+    peticiones) se han sacado de aquí porque ningún módulo de cálculo los
+    consumía; se piden bajo demanda con `obtener_hechos_sec(ticker)`.
+    """
     ticker = ticker.strip().upper()
     info = obtener_info(ticker)
     historico = obtener_historico(ticker)
     perfil = obtener_perfil_finnhub(ticker)
 
     existe = bool(info.get("longName") or info.get("shortName")) or not historico.empty
-    precio = primero_valido(
-        info.get("currentPrice"),
-        info.get("regularMarketPrice"),
-        obtener_precio_actual(ticker),
-    )
+
+    # Cadena de precio de más barata a más cara: info ya descargado -> último
+    # cierre del histórico ya descargado -> petición nueva (solo si hace falta).
+    precio = primero_valido(info.get("currentPrice"), info.get("regularMarketPrice"))
+    if not es_valido(precio) and not historico.empty:
+        precio = float(historico["Close"].iloc[-1])
+    if not es_valido(precio):
+        precio = obtener_precio_actual(ticker)
 
     return {
         "ticker": ticker,
@@ -455,7 +536,6 @@ def obtener_paquete(ticker: str) -> dict:
         "earnings": obtener_earnings(ticker),
         "noticias": obtener_noticias(ticker),
         "consenso": obtener_consenso(ticker),
-        "sec": obtener_hechos_sec(ticker),
         "fx_usd_eur": obtener_fx_usd_eur(),
         "generado": datetime.utcnow().isoformat(timespec="seconds"),
     }

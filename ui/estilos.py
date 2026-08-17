@@ -36,11 +36,17 @@ html, body, [class*="css"] {{
   font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
   color: var(--ss-texto);
 }}
-.block-container {{ padding-top: 1.2rem; max-width: 1500px; }}
+.block-container {{ padding-top: 3.5rem; max-width: 1500px; }}
 
 /* --- cabecera --- */
 .ss-home {{ font-size: .95rem; color: var(--ss-tenue); font-weight: 600; }}
-.ss-logo {{ display: block; margin: 0 auto; }}
+.ss-logo {{
+  display: block;
+  margin: .25rem auto 1.4rem auto;
+  width: 260px;
+  max-width: 55%;
+  height: auto;
+}}
 
 /* --- navbar: píldoras segmentadas --- */
 .st-key-navbar_pildoras > div[data-testid="stHorizontalBlock"] {{
