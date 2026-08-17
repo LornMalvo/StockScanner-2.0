@@ -19,8 +19,37 @@ import yfinance as yf
 from config.settings import TTL_FUNDAMENTALES, TTL_FX, TTL_NOTICIAS, TTL_PRECIO
 from utils.formato import es_valido, num, primero_valido
 
-SEC_UA = "StockScanner/1.0 (contacto: cambia-esto@ejemplo.com)"
+SEC_UA = "StockScanner/1.0 (contacto: tu-email-real@dominio.com)"
 FINNHUB_BASE = "https://finnhub.io/api/v1"
+
+
+@st.cache_resource(show_spinner=False)
+def _sesion_yfinance():
+    """Sesión con huella de navegador real para las peticiones a Yahoo Finance.
+
+    Yahoo bloquea o limita muy agresivamente las peticiones que no parecen
+    venir de un navegador, algo que afecta sobre todo a IPs compartidas como
+    las de Streamlit Community Cloud. `yf.Ticker().get_info()` (endpoint
+    quoteSummary) es el más sensible a esto; `history()` y los estados
+    financieros suelen sobrevivir con el cliente por defecto, lo que explica
+    que el precio y los estados lleguen pero el diccionario `info` no.
+
+    Se usa `curl_cffi` con `impersonate="chrome"` para replicar las cabeceras
+    TLS/HTTP de un Chrome real. Si el paquete no está instalado, se cae de
+    vuelta a una sesión de requests normal (mejor que nada, pero más
+    vulnerable al bloqueo).
+    """
+    try:
+        from curl_cffi import requests as curl_requests
+
+        return curl_requests.Session(impersonate="chrome")
+    except ImportError:
+        return requests.Session()
+
+
+def _ticker(simbolo: str) -> yf.Ticker:
+    """Punto único de creación de Ticker: toda petición pasa por la sesión."""
+    return yf.Ticker(simbolo, session=_sesion_yfinance())
 
 
 def _clave(nombre: str) -> str | None:
@@ -37,7 +66,7 @@ def _clave(nombre: str) -> str | None:
 def obtener_fx_usd_eur() -> float | None:
     """USD -> EUR en tiempo real. None si no se puede resolver."""
     try:
-        hist = yf.Ticker("EURUSD=X").history(period="5d", interval="1h")
+        hist = _ticker("EURUSD=X").history(period="5d", interval="1h")
         if hist.empty:
             return None
         eurusd = float(hist["Close"].dropna().iloc[-1])
@@ -50,7 +79,7 @@ def obtener_fx_usd_eur() -> float | None:
 @st.cache_data(ttl=TTL_FUNDAMENTALES, show_spinner=False)
 def obtener_info(ticker: str) -> dict:
     try:
-        info = yf.Ticker(ticker).get_info() or {}
+        info = _ticker(ticker).get_info() or {}
     except Exception:
         info = {}
     return info
@@ -59,7 +88,7 @@ def obtener_info(ticker: str) -> dict:
 @st.cache_data(ttl=TTL_PRECIO, show_spinner=False)
 def obtener_historico(ticker: str, periodo: str = "5y", intervalo: str = "1d") -> pd.DataFrame:
     try:
-        df = yf.Ticker(ticker).history(period=periodo, interval=intervalo, auto_adjust=False)
+        df = _ticker(ticker).history(period=periodo, interval=intervalo, auto_adjust=False)
     except Exception:
         return pd.DataFrame()
     if df is None or df.empty:
@@ -72,7 +101,7 @@ def obtener_historico(ticker: str, periodo: str = "5y", intervalo: str = "1d") -
 @st.cache_data(ttl=TTL_PRECIO, show_spinner=False)
 def obtener_precio_actual(ticker: str) -> float | None:
     try:
-        rapido = yf.Ticker(ticker).fast_info
+        rapido = _ticker(ticker).fast_info
         precio = primero_valido(rapido.get("last_price"), rapido.get("regular_market_price"))
         if precio:
             return precio
@@ -92,7 +121,7 @@ def obtener_estados_financieros(ticker: str) -> dict:
         "resultados_trim": pd.DataFrame(),
     }
     try:
-        t = yf.Ticker(ticker)
+        t = _ticker(ticker)
         salida["resultados"] = t.income_stmt if t.income_stmt is not None else pd.DataFrame()
         salida["balance"] = t.balance_sheet if t.balance_sheet is not None else pd.DataFrame()
         salida["flujo_caja"] = t.cashflow if t.cashflow is not None else pd.DataFrame()
@@ -166,7 +195,7 @@ def obtener_earnings(ticker: str) -> dict:
     # --- Respaldo yfinance ------------------------------------------------
     if salida["ultimo"] is None or salida["proxima_fecha"] is None:
         try:
-            fechas = yf.Ticker(ticker).get_earnings_dates(limit=12)
+            fechas = _ticker(ticker).get_earnings_dates(limit=12)
         except Exception:
             fechas = None
         if fechas is not None and not fechas.empty:
@@ -219,7 +248,7 @@ def obtener_noticias(ticker: str, limite: int = 5) -> list[dict]:
 
     if len(noticias) < limite:
         try:
-            crudas = yf.Ticker(ticker).news or []
+            crudas = _ticker(ticker).news or []
         except Exception:
             crudas = []
         for n in crudas:
