@@ -156,15 +156,14 @@ def _bloque_1_cabecera(a: dict) -> None:
         st.write("")
         if bd_supabase.hay_conexion():
             favorito = bd_supabase.es_favorito(p["ticker"])
-            etiqueta = "★  Quitar de Favoritos" if favorito else "☆  Añadir a Favoritos"
-            if st.button(etiqueta, key="btn_favorito", use_container_width=True):
+            key = "btn_favorito_on" if favorito else "btn_favorito_off"
+            if C.boton_favorito(favorito, key=key):
                 bd_supabase.alternar_favorito(p["ticker"], p.get("nombre"), p.get("sector"))
                 st.rerun()
         else:
             st.button(
-                "☆  Añadir a Favoritos",
+                "☆",
                 disabled=True,
-                use_container_width=True,
                 help="Configura SUPABASE_URL y SUPABASE_KEY en los secrets para usar Favoritos.",
             )
 
@@ -180,6 +179,7 @@ def _bloque_2_descripcion(a: dict) -> None:
         st.caption(descripcion[:520] + ("…" if len(descripcion) > 520 else ""))
     else:
         st.markdown(f'<div class="ss-nd">{TEXTO_ND}</div>', unsafe_allow_html=True)
+        _diagnostico_info(p)
 
     st.markdown("**Últimas noticias**")
     C.lista_noticias(p.get("noticias", []))
@@ -225,6 +225,26 @@ def _linea_sorpresa(concepto: str, real, estimado) -> None:
     C.metrica(f"¿{concepto} superó estimaciones?", f"{veredicto} ({fmt_pct(desviacion)})")
 
 
+def _diagnostico_info(p: dict) -> None:
+    """Muestra la causa real cuando yfinance no ha podido servir los fundamentales.
+
+    Solo aparece cuando `datos_api.obtener_info` ha dejado constancia del
+    error en la clave interna `_ss_error`; así se distingue "Yahoo no tiene
+    ese dato para este ticker" (fila con TEXTO_ND) de "la petición ha
+    fallado" (aquí se ve el motivo exacto para poder corregirlo).
+    """
+    errores = (p.get("info") or {}).get("_ss_error")
+    if not errores:
+        return
+    with st.expander("⚠️ Los fundamentales no se han podido cargar — ver motivo"):
+        for e in errores:
+            st.code(e, language=None)
+        st.caption(
+            "Esto es un fallo de conexión con la fuente de datos, no una ausencia real del "
+            "dato. Compártelo tal cual para poder corregirlo."
+        )
+
+
 # ============================================================== Bloque 3 ======
 def _bloque_3_grafico(a: dict) -> None:
     p, t = a["paquete"], a["tecnico"]
@@ -233,6 +253,7 @@ def _bloque_3_grafico(a: dict) -> None:
     C.titulo_bloque("Cotización · MACD y datos fundamentales y técnicos")
 
     C.grafico_precio_macd(p.get("historico"), t, p["ticker"])
+    _diagnostico_info(p)
 
     col_f, col_t = st.columns(2)
     with col_f:

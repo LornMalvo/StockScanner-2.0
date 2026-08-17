@@ -36,6 +36,15 @@ SECCIONES = [
     "Favoritos",
 ]
 
+# Icono Material (nombre corto, sin prefijo) para cada sección de la navbar.
+ICONOS_SECCION = {
+    "Análisis Individual": "search",
+    "Rastreador": "radar",
+    "Gestión de Cartera": "work",
+    "Paper Trading": "science",
+    "Favoritos": "star",
+}
+
 # ------------------------------------------------------- texto de datos N/D --
 TEXTO_ND = "Dato no disponible"
 

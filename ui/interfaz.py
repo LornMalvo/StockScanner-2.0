@@ -10,7 +10,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from config.settings import APP_CLAIM, APP_NOMBRE, SECCIONES
+from config.settings import APP_CLAIM, APP_NOMBRE, ICONOS_SECCION, SECCIONES
 from ui import estilos
 from ui.vistas import (
     analisis_individual,
@@ -47,23 +47,31 @@ def cabecera() -> None:
 
 
 def navbar() -> str:
-    """Navbar horizontal. Devuelve la sección seleccionada."""
+    """Navbar de píldoras segmentadas con icono. Devuelve la sección activa.
+
+    Sigue siendo un st.button real por sección (mismo ciclo de eventos que
+    cualquier widget de Streamlit): el aspecto de píldora lo da la clase
+    `.st-key-navbar_pildoras` que Streamlit asigna automáticamente al
+    contenedor (ver ui/estilos.py).
+    """
     if "seccion" not in st.session_state:
         st.session_state["seccion"] = SECCIONES[0]
 
-    columnas = st.columns(len(SECCIONES))
-    for columna, seccion in zip(columnas, SECCIONES):
-        activa = st.session_state["seccion"] == seccion
-        with columna:
-            if st.button(
-                seccion.upper(),
-                key=f"nav_{seccion}",
-                use_container_width=True,
-                type="primary" if activa else "secondary",
-            ):
-                st.session_state["seccion"] = seccion
-                st.rerun()
-    st.divider()
+    with st.container(key="navbar_pildoras"):
+        columnas = st.columns(len(SECCIONES))
+        for columna, seccion in zip(columnas, SECCIONES):
+            activa = st.session_state["seccion"] == seccion
+            with columna:
+                if st.button(
+                    seccion,
+                    key=f"nav_{seccion}",
+                    icon=f":material/{ICONOS_SECCION[seccion]}:",
+                    use_container_width=True,
+                    type="primary" if activa else "secondary",
+                ):
+                    st.session_state["seccion"] = seccion
+                    st.rerun()
+    st.write("")
     return st.session_state["seccion"]
 
 

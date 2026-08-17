@@ -78,11 +78,31 @@ def obtener_fx_usd_eur() -> float | None:
 # ==================================================================== yfinance =
 @st.cache_data(ttl=TTL_FUNDAMENTALES, show_spinner=False)
 def obtener_info(ticker: str) -> dict:
-    try:
-        info = _ticker(ticker).get_info() or {}
-    except Exception:
-        info = {}
-    return info
+    """Fundamentales de yfinance con dos estrategias y diagnóstico real.
+
+    Se intenta primero `get_info()` y, si llega vacío, la propiedad `.info`
+    (a veces una tiene éxito y la otra no, según el estado del endpoint de
+    Yahoo). Si ambas fallan, se conserva el mensaje de error real en la clave
+    interna `_ss_error` en vez de devolver un diccionario vacío mudo: así la
+    interfaz puede mostrar la causa concreta en lugar de un simple "no
+    disponible" que no ayuda a diagnosticar.
+    """
+    errores: list[str] = []
+    t = _ticker(ticker)
+
+    for nombre_metodo, obtener in (("get_info()", t.get_info), ("propiedad .info", lambda: t.info)):
+        try:
+            info = obtener()
+            if info and (info.get("longName") or info.get("shortName") or info.get("regularMarketPrice")):
+                return info
+            if info:
+                errores.append(f"{nombre_metodo}: respuesta sin campos de identidad ({len(info)} claves)")
+            else:
+                errores.append(f"{nombre_metodo}: respuesta vacía")
+        except Exception as e:
+            errores.append(f"{nombre_metodo}: {type(e).__name__}: {e}")
+
+    return {"_ss_error": errores}
 
 
 @st.cache_data(ttl=TTL_PRECIO, show_spinner=False)
@@ -96,6 +116,7 @@ def obtener_historico(ticker: str, periodo: str = "5y", intervalo: str = "1d") -
     df = df.dropna(subset=["Close"])
     df.index = pd.to_datetime(df.index).tz_localize(None)
     return df
+
 
 
 @st.cache_data(ttl=TTL_PRECIO, show_spinner=False)

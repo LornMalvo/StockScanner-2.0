@@ -16,6 +16,22 @@ def titulo_bloque(texto: str) -> None:
     st.markdown(f"#### {texto}")
 
 
+def boton_favorito(favorito: bool, key: str, ayuda: str | None = None) -> bool:
+    """Icono de estrella clicable: rellena y dorada si es favorito, vacía si no.
+
+    Usa un st.button real (mismo ciclo de eventos que cualquier otro botón,
+    sin recargas de página) coloreado vía la clase `.st-key-<key>` que
+    Streamlit asigna automáticamente al contenedor del widget con esa key
+    (ver reglas `.st-key-btn_favorito_on/off` en ui/estilos.py).
+    """
+    glifo = "★" if favorito else "☆"
+    return st.button(
+        glifo,
+        key=key,
+        help=ayuda or ("Quitar de Favoritos" if favorito else "Añadir a Favoritos"),
+    )
+
+
 def metrica(etiqueta: str, valor: str) -> None:
     """Fila etiqueta/valor. Los valores ausentes se marcan explícitamente."""
     clase = "ss-nd" if valor == TEXTO_ND else ""

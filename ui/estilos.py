@@ -42,13 +42,40 @@ html, body, [class*="css"] {{
 .ss-home {{ font-size: .95rem; color: var(--ss-tenue); font-weight: 600; }}
 .ss-logo {{ display: block; margin: 0 auto; }}
 
-/* --- navbar --- */
-div[data-testid="stTabs"] button[data-baseweb="tab"] {{
-  font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
-  font-size: .82rem; color: var(--ss-tenue);
+/* --- navbar: píldoras segmentadas --- */
+.st-key-navbar_pildoras > div[data-testid="stHorizontalBlock"] {{
+  background: #f1f5f9;
+  border-radius: 999px;
+  padding: 5px;
+  gap: 6px !important;
 }}
-div[data-testid="stTabs"] button[aria-selected="true"] {{ color: var(--ss-primario); }}
-div[data-testid="stTabs"] div[data-baseweb="tab-highlight"] {{ background: var(--ss-azul); }}
+.st-key-navbar_pildoras button {{
+  width: 100% !important;
+  border: none !important;
+  border-radius: 999px !important;
+  box-shadow: none !important;
+  font-size: .8rem !important;
+  font-weight: 500 !important;
+  padding: .6rem .4rem !important;
+}}
+.st-key-navbar_pildoras button[kind="secondary"] {{
+  background: transparent !important;
+  color: var(--ss-tenue) !important;
+}}
+.st-key-navbar_pildoras button[kind="secondary"]:hover {{
+  background: #e2e8f0 !important;
+  color: var(--ss-primario) !important;
+}}
+.st-key-navbar_pildoras button[kind="primary"] {{
+  background: var(--ss-azul) !important;
+  color: #ffffff !important;
+}}
+.st-key-navbar_pildoras button[kind="primary"]:hover {{
+  background: var(--ss-primario) !important;
+}}
+.st-key-navbar_pildoras button svg {{
+  fill: currentColor !important;
+}}
 
 /* --- tarjetas de bloque --- */
 .ss-card {{
@@ -117,6 +144,28 @@ div[data-testid="stVerticalBlockBorderWrapper"] {{ border-radius: 18px; }}
 /* --- botones --- */
 .stButton > button {{ border-radius: 10px; font-weight: 600; }}
 .stButton > button[kind="primary"] {{ background: var(--ss-azul); border-color: var(--ss-azul); }}
+
+/* --- botón de favorito (estrella) --- */
+.st-key-btn_favorito_on button, .st-key-btn_favorito_off button {{
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  font-size: 2.15rem !important;
+  line-height: 1 !important;
+  padding: 0 .25rem !important;
+  transition: transform .12s ease;
+}}
+.st-key-btn_favorito_on button p, .st-key-btn_favorito_off button p,
+.st-key-btn_favorito_on button div, .st-key-btn_favorito_off button div {{
+  font-size: inherit !important;
+  color: inherit !important;
+}}
+.st-key-btn_favorito_on button {{ color: #f5b400 !important; }}
+.st-key-btn_favorito_off button {{ color: #94a3b8 !important; }}
+.st-key-btn_favorito_on button:hover, .st-key-btn_favorito_off button:hover {{
+  color: #f5b400 !important;
+  transform: scale(1.1);
+}}
 </style>
 """
 
