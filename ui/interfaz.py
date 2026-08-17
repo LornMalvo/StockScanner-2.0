@@ -47,7 +47,6 @@ def _logo_base64() -> str | None:
 
 
 def cabecera() -> None:
-    st.markdown('<div class="ss-home">Home</div>', unsafe_allow_html=True)
     logo = _logo_base64()
     if logo:
         st.markdown(

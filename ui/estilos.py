@@ -39,12 +39,11 @@ html, body, [class*="css"] {{
 .block-container {{ padding-top: 3.5rem; max-width: 1500px; }}
 
 /* --- cabecera --- */
-.ss-home {{ font-size: .95rem; color: var(--ss-tenue); font-weight: 600; }}
 .ss-logo {{
   display: block;
   margin: .25rem auto 1.4rem auto;
-  width: 260px;
-  max-width: 55%;
+  width: 340px;
+  max-width: 68%;
   height: auto;
 }}
 
