@@ -1,0 +1,191 @@
+"""Indicadores técnicos implementados con pandas/numpy.
+
+Se evita TA-Lib a propósito: requiere compilación nativa y Streamlit Community
+Cloud no la soporta sin fricción. Todas las funciones devuelven None cuando no
+hay histórico suficiente, nunca un 0.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+
+# ------------------------------------------------------------- básicos ------
+def sma(serie: pd.Series, ventana: int) -> pd.Series:
+    return serie.rolling(window=ventana, min_periods=ventana).mean()
+
+
+def ema(serie: pd.Series, ventana: int) -> pd.Series:
+    return serie.ewm(span=ventana, adjust=False).mean()
+
+
+def rsi(serie: pd.Series, ventana: int = 14) -> pd.Series:
+    delta = serie.diff()
+    ganancia = delta.clip(lower=0)
+    perdida = -delta.clip(upper=0)
+    media_g = ganancia.ewm(alpha=1 / ventana, adjust=False).mean()
+    media_p = perdida.ewm(alpha=1 / ventana, adjust=False).mean()
+    rs = media_g / media_p.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
+
+def macd(serie: pd.Series, rapida: int = 12, lenta: int = 26, senal: int = 9) -> pd.DataFrame:
+    linea = ema(serie, rapida) - ema(serie, lenta)
+    linea_senal = ema(linea, senal)
+    return pd.DataFrame(
+        {"macd": linea, "senal": linea_senal, "histograma": linea - linea_senal}
+    )
+
+
+def atr(df: pd.DataFrame, ventana: int = 14) -> pd.Series:
+    alto, bajo, cierre = df["High"], df["Low"], df["Close"]
+    tr = pd.concat(
+        [alto - bajo, (alto - cierre.shift()).abs(), (bajo - cierre.shift()).abs()],
+        axis=1,
+    ).max(axis=1)
+    return tr.ewm(alpha=1 / ventana, adjust=False).mean()
+
+
+def adx(df: pd.DataFrame, ventana: int = 14) -> pd.Series:
+    alto, bajo = df["High"], df["Low"]
+    up = alto.diff()
+    down = -bajo.diff()
+    plus_dm = np.where((up > down) & (up > 0), up, 0.0)
+    minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+    tr = atr(df, ventana)
+    plus_di = 100 * pd.Series(plus_dm, index=df.index).ewm(
+        alpha=1 / ventana, adjust=False
+    ).mean() / tr.replace(0, np.nan)
+    minus_di = 100 * pd.Series(minus_dm, index=df.index).ewm(
+        alpha=1 / ventana, adjust=False
+    ).mean() / tr.replace(0, np.nan)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    return dx.ewm(alpha=1 / ventana, adjust=False).mean()
+
+
+def obv(df: pd.DataFrame) -> pd.Series:
+    direccion = np.sign(df["Close"].diff()).fillna(0)
+    return (direccion * df["Volume"]).cumsum()
+
+
+# ------------------------------------------------- estructura de precios ----
+def pivotes(df: pd.DataFrame, ventana: int = 10) -> dict[str, list[float]]:
+    """Máximos y mínimos locales usados como resistencias y soportes."""
+    alto, bajo = df["High"], df["Low"]
+    max_local = alto[(alto == alto.rolling(ventana * 2 + 1, center=True).max())]
+    min_local = bajo[(bajo == bajo.rolling(ventana * 2 + 1, center=True).min())]
+    return {
+        "resistencias": sorted(round(float(v), 4) for v in max_local.dropna().unique()),
+        "soportes": sorted(round(float(v), 4) for v in min_local.dropna().unique()),
+    }
+
+
+def fibonacci(minimo: float, maximo: float) -> dict[str, float]:
+    rango = maximo - minimo
+    return {
+        "0.236": maximo - rango * 0.236,
+        "0.382": maximo - rango * 0.382,
+        "0.500": maximo - rango * 0.500,
+        "0.618": maximo - rango * 0.618,
+        "0.786": maximo - rango * 0.786,
+    }
+
+
+def gaps_sin_rellenar(df: pd.DataFrame, umbral: float = 0.02, maximo: int = 8) -> list[dict]:
+    """Huecos de apertura que el precio todavía no ha vuelto a cubrir."""
+    salida: list[dict] = []
+    cierre_prev = df["Close"].shift()
+    apertura = df["Open"]
+    for fecha in df.index[1:]:
+        cp, ap = cierre_prev.get(fecha), apertura.get(fecha)
+        if pd.isna(cp) or pd.isna(ap) or cp <= 0:
+            continue
+        salto = (ap - cp) / cp
+        if abs(salto) < umbral:
+            continue
+        posterior = df.loc[fecha:]
+        if salto > 0 and posterior["Low"].min() <= cp:
+            continue  # gap alcista ya rellenado
+        if salto < 0 and posterior["High"].max() >= cp:
+            continue  # gap bajista ya rellenado
+        salida.append(
+            {
+                "fecha": fecha,
+                "desde": float(min(cp, ap)),
+                "hasta": float(max(cp, ap)),
+                "tipo": "alcista" if salto > 0 else "bajista",
+            }
+        )
+    return salida[-maximo:]
+
+
+# ------------------------------------------------------------ resumen -------
+def _ultimo(serie: pd.Series) -> float | None:
+    if serie is None or len(serie) == 0:
+        return None
+    valor = serie.dropna()
+    return float(valor.iloc[-1]) if len(valor) else None
+
+
+def calcular_todo(historico: pd.DataFrame) -> dict:
+    """Devuelve el paquete técnico completo a partir del histórico OHLCV."""
+    if historico is None or historico.empty or len(historico) < 30:
+        return {"disponible": False}
+
+    df = historico.copy()
+    cierre = df["Close"]
+    macd_df = macd(cierre)
+    rsi_s = rsi(cierre)
+    adx_s = adx(df)
+    obv_s = obv(df)
+    atr_s = atr(df)
+    mm50, mm200 = sma(cierre, 50), sma(cierre, 200)
+
+    precio = _ultimo(cierre)
+    ventana_52 = df.tail(252)
+    max_52 = float(ventana_52["High"].max()) if len(ventana_52) else None
+    min_52 = float(ventana_52["Low"].min()) if len(ventana_52) else None
+    ath = float(df["High"].max())
+    atl = float(df["Low"].min())
+
+    # Pendiente del OBV en las últimas 20 sesiones, normalizada.
+    obv_tendencia = None
+    obv_limpio = obv_s.dropna()
+    if len(obv_limpio) >= 20:
+        tramo = obv_limpio.tail(20)
+        escala = abs(tramo).mean()
+        if escala:
+            obv_tendencia = float(np.polyfit(range(len(tramo)), tramo.values, 1)[0] / escala)
+
+    variacion_1a = None
+    if len(cierre) >= 252 and cierre.iloc[-252] > 0:
+        variacion_1a = float((precio / cierre.iloc[-252] - 1) * 100)
+
+    return {
+        "disponible": True,
+        "precio": precio,
+        "series": {"macd": macd_df, "mm50": mm50, "mm200": mm200, "rsi": rsi_s},
+        "rsi": _ultimo(rsi_s),
+        "macd": _ultimo(macd_df["macd"]),
+        "macd_senal": _ultimo(macd_df["senal"]),
+        "macd_hist": _ultimo(macd_df["histograma"]),
+        "macd_hist_prev": float(macd_df["histograma"].dropna().iloc[-2])
+        if len(macd_df["histograma"].dropna()) > 1
+        else None,
+        "adx": _ultimo(adx_s),
+        "atr": _ultimo(atr_s),
+        "obv": _ultimo(obv_s),
+        "obv_tendencia": obv_tendencia,
+        "mm50": _ultimo(mm50),
+        "mm200": _ultimo(mm200),
+        "max_52s": max_52,
+        "min_52s": min_52,
+        "ath": ath,
+        "atl": atl,
+        "variacion_1a_pct": variacion_1a,
+        "volumen_medio_3m": float(df["Volume"].tail(63).mean()) if "Volume" in df else None,
+        "pivotes": pivotes(df),
+        "fibonacci": fibonacci(min_52, max_52) if min_52 and max_52 else {},
+        "gaps": gaps_sin_rellenar(df),
+    }
