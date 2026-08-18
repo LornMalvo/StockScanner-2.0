@@ -42,27 +42,59 @@ def metrica(etiqueta: str, valor: str) -> None:
     )
 
 
-def metrica_color(etiqueta: str, valor: str, color: str | None = None, extra: str | None = None) -> None:
-    """Fila etiqueta/valor con color opcional en el valor (p. ej. verde cuando
-    destaca sobre su sector) y un texto gris opcional a la derecha (media del
-    sector). Los valores ausentes ignoran el color y se marcan como siempre.
-    """
-    if valor == TEXTO_ND:
-        metrica(etiqueta, valor)
-        return
-    estilo = f' style="color:{color}"' if color else ""
-    extra_html = f' <span class="ss-metrica-extra">{html.escape(extra)}</span>' if extra else ""
+def metrica_color(etiqueta: str, valor: str, color: str) -> None:
+    """Fila etiqueta/valor con el valor coloreado (p. ej. verde/rojo)."""
     st.markdown(
         f'<div class="ss-metrica"><span>{html.escape(etiqueta)}</span>'
-        f'<span{estilo}>{html.escape(str(valor))}{extra_html}</span></div>',
+        f'<span style="color:{color};font-weight:700">{html.escape(str(valor))}</span></div>',
         unsafe_allow_html=True,
     )
 
 
-def subgrupo(texto: str) -> None:
-    """Cabecera pequeña para agrupar métricas dentro de un bloque (p. ej. las
-    tres familias de Fundamentales: Valoración, Rentabilidad, Balance y Caja)."""
-    st.markdown(f'<div class="ss-subgrupo">{html.escape(texto)}</div>', unsafe_allow_html=True)
+def metrica_distancia(etiqueta: str, base: str, extra: str, color: str) -> None:
+    """Fila etiqueta/valor donde el valor base se muestra en estilo normal y
+    solo la distancia % (entre paréntesis) lleva el color verde/rojo."""
+    if base == TEXTO_ND:
+        metrica(etiqueta, base)
+        return
+    st.markdown(
+        f'<div class="ss-metrica"><span>{html.escape(etiqueta)}</span>'
+        f'<span>{html.escape(base)} <span style="color:{color}">({html.escape(extra)})</span></span></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def metrica_nota(etiqueta: str, valor: str, nota: str | None = None) -> None:
+    """Fila etiqueta/valor con una nota gris opcional a la derecha (sin
+    prefijo fijo, p. ej. el nivel de RSI junto a su cifra)."""
+    if valor == TEXTO_ND or not nota:
+        metrica(etiqueta, valor)
+        return
+    st.markdown(
+        f'<div class="ss-metrica"><span>{html.escape(etiqueta)}</span>'
+        f'<span>{html.escape(valor)} <span class="ss-media-sector">{html.escape(nota)}</span></span></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def metrica_fundamental(
+    etiqueta: str, valor: str, destaca: bool = False, media_sector: str | None = None
+) -> None:
+    """Fila de fundamentales: el valor se resalta en verde si destaca sobre
+    la media de su sector, con la media (opcional) en gris a la derecha."""
+    clase = "ss-nd" if valor == TEXTO_ND else ""
+    estilo = f"color:{C_VERDE};font-weight:700" if destaca and valor != TEXTO_ND else ""
+    media_html = (
+        f'<span class="ss-media-sector">media sector: {html.escape(media_sector)}</span>'
+        if media_sector
+        else ""
+    )
+    st.markdown(
+        f'<div class="ss-metrica"><span>{html.escape(etiqueta)}</span>'
+        f'<span><span class="{clase}" style="{estilo}">{html.escape(str(valor))}</span>'
+        f"{media_html}</span></div>",
+        unsafe_allow_html=True,
+    )
 
 
 def alerta(texto: str, color: str) -> None:

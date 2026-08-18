@@ -125,12 +125,13 @@ div[data-testid="stVerticalBlockBorderWrapper"] {{ border-radius: 18px; }}
 }}
 .ss-metrica span:first-child {{ color: var(--ss-tenue); }}
 .ss-metrica span:last-child {{ font-weight: 600; font-variant-numeric: tabular-nums; }}
-.ss-metrica-extra {{ color: var(--ss-tenue); font-weight: 500; font-size: .78rem; margin-left: .35rem; }}
+.ss-media-sector {{
+  color: var(--ss-tenue); font-weight: 400; font-size: .74rem; margin-left: .5rem;
+}}
 
-/* --- subcabeceras de agrupación (p. ej. dentro de Fundamentales) --- */
-.ss-subgrupo {{
-  font-size: .74rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;
-  color: var(--ss-primario); margin: .85rem 0 .2rem 0;
+/* --- anotaciones al pie (p. ej. tipo de cambio aplicado) --- */
+.ss-anotacion {{
+  color: var(--ss-tenue); font-size: .68rem; font-style: italic; margin-top: .2rem;
 }}
 
 /* --- noticias --- */
