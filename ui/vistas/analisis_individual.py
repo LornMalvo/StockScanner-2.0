@@ -66,6 +66,11 @@ def ejecutar_analisis(ticker: str) -> dict:
     calidad = valoracion.puntuar_calidad(paquete, fair_value)
     momento = timing.calcular_timing(paquete, tecnico, fair_value, calidad)
     plan = plan_dca.construir_plan(paquete, tecnico, fair_value)
+    st.json({                                              
+        "tecnico": {k: v for k, v in tecnico.items() if k != "series"},
+        "fair_value": fair_value,
+        "plan": plan,
+    })                
     veredicto = plan_dca.veredicto_final(calidad, fair_value, momento, plan)
 
     return {
