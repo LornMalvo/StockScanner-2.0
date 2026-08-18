@@ -89,18 +89,6 @@ def media_valida(valores: Iterable[Any]) -> float | None:
     return sum(limpios) / len(limpios) if limpios else None
 
 
-def es_favorable(valor: Any, referencia: Any, menor_es_mejor: bool = False) -> bool | None:
-    """Compara un valor con una referencia (media sectorial o umbral general).
-
-    Devuelve None si no hay datos suficientes para comparar (nunca se asume
-    "bueno" ni "malo" sin dato). `menor_es_mejor=True` para métricas donde
-    menos es preferible (PER, PEG, deuda...).
-    """
-    if not es_valido(valor) or not es_valido(referencia):
-        return None
-    return (float(valor) < float(referencia)) if menor_es_mejor else (float(valor) > float(referencia))
-
-
 # ------------------------------------------------------------- formateo -----
 def fmt_num(valor: Any, decimales: int = 2, sufijo: str = "") -> str:
     if not es_valido(valor):
@@ -117,9 +105,55 @@ def fmt_pct(valor: Any, decimales: int = 1, ya_en_pct: bool = True) -> str:
     return f"{v:+.{decimales}f} %".replace(".", ",")
 
 
-def fmt_compacto(valor: Any, moneda: str = "", decimales: int = 2) -> str:
-    """Formatea magnitudes grandes: 1.234.000.000 -> 1,23B. `moneda` se añade
-    tal cual al final (pasa " $" o " €" con el espacio incluido si procede)."""
+def fmt_compacto(valor: Any, moneda: str = "") -> str:
+    """Formatea magnitudes grandes: 1.234.000.000 -> 1,23 B."""
+    if not es_valido(valor):
+        return TEXTO_ND
+    v = float(valor)
+    signo = "-" if v < 0 else ""
+    v = abs(v)
+    for corte, sufijo in ((1e12, " T"), (1e9, " B"), (1e6, " M"), (1e3, " K")):
+        if v >= corte:
+            return f"{signo}{v / corte:,.2f}{sufijo}{moneda}".replace(".", ",")
+    return f"{signo}{v:,.2f}{moneda}".replace(".", ",")
+
+
+def fmt_usd_eur(valor_usd: Any, fx_usd_eur: Any, decimales: int = 2) -> str:
+    """Importe en USD seguido de su conversión a EUR entre paréntesis.
+
+    Regla del proyecto: todo valor monetario en $ debe ir acompañado de su
+    conversión a €. Si no hay tipo de cambio disponible, se muestra solo el
+    importe en USD (nunca se inventa una conversión).
+    """
+    if not es_valido(valor_usd):
+        return TEXTO_ND
+    base = f"{float(valor_usd):,.{decimales}f} $".replace(",", "@").replace(
+        ".", ","
+    ).replace("@", ".")
+    if not es_valido(fx_usd_eur):
+        return base
+    eur = float(valor_usd) * float(fx_usd_eur)
+    base_eur = f"{eur:,.{decimales}f} €".replace(",", "@").replace(".", ",").replace(
+        "@", "."
+    )
+    return f"{base} ({base_eur})"
+
+
+def _recortar_decimales(valor: float, decimales: int = 2) -> str:
+    """Redondea sin ceros sobrantes: 959,00 -> '959'; 828,19 se mantiene."""
+    texto = f"{valor:.{decimales}f}"
+    if "." in texto:
+        texto = texto.rstrip("0").rstrip(".")
+    return texto.replace(".", ",")
+
+
+def fmt_compacto_moneda(valor: Any, simbolo: str) -> str:
+    """Magnitud grande con símbolo de moneda: 959000000 -> '959M $'.
+
+    A diferencia de `fmt_compacto`, recorta los ceros decimales sobrantes
+    (959,00 -> 959) mostrando decimales solo cuando aportan precisión real
+    (828.192.403,71 -> 828,19M).
+    """
     if not es_valido(valor):
         return TEXTO_ND
     v = float(valor)
@@ -127,43 +161,20 @@ def fmt_compacto(valor: Any, moneda: str = "", decimales: int = 2) -> str:
     v = abs(v)
     for corte, sufijo in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
         if v >= corte:
-            return f"{signo}{v / corte:,.{decimales}f}{sufijo}{moneda}".replace(".", ",")
-    return f"{signo}{v:,.{decimales}f}{moneda}".replace(".", ",")
+            return f"{signo}{_recortar_decimales(v / corte)}{sufijo} {simbolo}"
+    return f"{signo}{_recortar_decimales(v)} {simbolo}"
 
 
-def fmt_eur(valor_usd: Any, fx_usd_eur: Any, decimales: int = 2) -> str:
-    """Solo el importe convertido a EUR (para líneas ya acompañadas del $ aparte)."""
-    if not es_valido(valor_usd) or not es_valido(fx_usd_eur):
+def fmt_compacto_usd_eur(valor_usd: Any, fx_usd_eur: Any) -> str:
+    """Magnitud grande en USD (formato compacto) con su conversión a EUR
+    entre paréntesis. P. ej.: '959M $ (828,19M €)'."""
+    if not es_valido(valor_usd):
         return TEXTO_ND
+    base = fmt_compacto_moneda(valor_usd, "$")
+    if not es_valido(fx_usd_eur):
+        return base
     eur = float(valor_usd) * float(fx_usd_eur)
-    return f"{eur:,.{decimales}f} €".replace(",", "@").replace(".", ",").replace("@", ".")
-
-
-def fmt_usd_eur(valor_usd: Any, fx_usd_eur: Any, decimales: int = 2) -> str:
-    """<importe> $ (<importe> €). Formato estándar para todo valor monetario en
-    dólares que muestre la app (regla de oro de conversión a euros)."""
-    if not es_valido(valor_usd):
-        return TEXTO_ND
-    base = f"{float(valor_usd):,.{decimales}f} $".replace(",", "@").replace(
-        ".", ","
-    ).replace("@", ".")
-    if not es_valido(fx_usd_eur):
-        return f"{base} (€: {TEXTO_ND})"
-    return f"{base} ({fmt_eur(valor_usd, fx_usd_eur, decimales)})"
-
-
-def fmt_usd_eur_compacto(
-    valor_usd: Any, fx_usd_eur: Any, decimales_usd: int = 0, decimales_eur: int = 2
-) -> str:
-    """Magnitudes grandes en ambas divisas: 959.000.000 -> "959M $ (828,19M €)"."""
-    if not es_valido(valor_usd):
-        return TEXTO_ND
-    usd_txt = fmt_compacto(valor_usd, " $", decimales_usd)
-    if not es_valido(fx_usd_eur):
-        return f"{usd_txt} (€: {TEXTO_ND})"
-    eur_valor = float(valor_usd) * float(fx_usd_eur)
-    eur_txt = fmt_compacto(eur_valor, " €", decimales_eur)
-    return f"{usd_txt} ({eur_txt})"
+    return f"{base} ({fmt_compacto_moneda(eur, '€')})"
 
 
 def fmt_fecha(valor: Any) -> str:
