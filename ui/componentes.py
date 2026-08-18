@@ -42,6 +42,29 @@ def metrica(etiqueta: str, valor: str) -> None:
     )
 
 
+def metrica_color(etiqueta: str, valor: str, color: str | None = None, extra: str | None = None) -> None:
+    """Fila etiqueta/valor con color opcional en el valor (p. ej. verde cuando
+    destaca sobre su sector) y un texto gris opcional a la derecha (media del
+    sector). Los valores ausentes ignoran el color y se marcan como siempre.
+    """
+    if valor == TEXTO_ND:
+        metrica(etiqueta, valor)
+        return
+    estilo = f' style="color:{color}"' if color else ""
+    extra_html = f' <span class="ss-metrica-extra">{html.escape(extra)}</span>' if extra else ""
+    st.markdown(
+        f'<div class="ss-metrica"><span>{html.escape(etiqueta)}</span>'
+        f'<span{estilo}>{html.escape(str(valor))}{extra_html}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def subgrupo(texto: str) -> None:
+    """Cabecera pequeña para agrupar métricas dentro de un bloque (p. ej. las
+    tres familias de Fundamentales: Valoración, Rentabilidad, Balance y Caja)."""
+    st.markdown(f'<div class="ss-subgrupo">{html.escape(texto)}</div>', unsafe_allow_html=True)
+
+
 def alerta(texto: str, color: str) -> None:
     st.markdown(
         f'<div class="ss-alerta" style="background:{color}">{html.escape(texto)}</div>',
