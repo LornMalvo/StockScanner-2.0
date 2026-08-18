@@ -6,17 +6,40 @@ import html
 
 import streamlit as st
 
-from config.settings import C_PRIMARIO, TEXTO_ND
+from config.settings import (
+    C_AMBAR,
+    C_PRIMARIO,
+    C_ROJO,
+    C_VERDE,
+    EV_EBITDA_MEDIANO_SECTOR,
+    FORWARD_PER_MEDIANO_SECTOR,
+    MARGEN_NETO_MEDIANO_SECTOR,
+    MARGEN_OPERATIVO_MEDIANO_SECTOR,
+    PEG_MEDIANO_SECTOR,
+    PER_MEDIANO_SECTOR,
+    ROE_MEDIANO_SECTOR,
+    TEXTO_ND,
+    UMBRAL_CURRENT_RATIO,
+    UMBRAL_DEUDA_EQUITY,
+    UMBRAL_MARGEN_EBITDA,
+    UMBRAL_PRECIO_VALOR_CONTABLE,
+    UMBRAL_PRECIO_VENTAS,
+    UMBRAL_ROA,
+    UMBRAL_ROIC,
+)
 from core import alertas_telegram, bd_supabase, datos_api, indicadores, plan_dca, timing, valoracion
 from ui import componentes as C
 from utils.formato import (
     dias_hasta,
+    es_favorable,
     es_valido,
     fmt_compacto,
+    fmt_eur,
     fmt_fecha,
     fmt_num,
     fmt_pct,
     fmt_usd_eur,
+    fmt_usd_eur_compacto,
 )
 
 
@@ -146,8 +169,7 @@ def _bloque_1_cabecera(a: dict) -> None:
                 unsafe_allow_html=True,
             )
             if moneda == "USD":
-                eur = f"{precio * fx:,.2f} €".replace(",", "@").replace(".", ",").replace("@", ".")
-                sub = eur if es_valido(fx) else f"Tipo de cambio: {TEXTO_ND}"
+                sub = fmt_eur(precio, fx) if es_valido(fx) else f"Tipo de cambio: {TEXTO_ND}"
                 st.markdown(f'<div class="ss-precio-eur">{sub}</div>', unsafe_allow_html=True)
         else:
             st.markdown(f'<div class="ss-nd">{TEXTO_ND}</div>', unsafe_allow_html=True)
@@ -196,13 +218,13 @@ def _bloque_2_descripcion(a: dict) -> None:
         _linea_sorpresa("BPA", ultimo.get("eps_real"), ultimo.get("eps_estimado"))
         C.metrica(
             "Ingresos publicados",
-            fmt_usd_eur(ultimo.get("ingresos_real"), fx)
+            fmt_usd_eur_compacto(ultimo.get("ingresos_real"), fx)
             if es_valido(ultimo.get("ingresos_real"))
             else TEXTO_ND,
         )
         C.metrica(
             "Ingresos estimados",
-            fmt_compacto(ultimo.get("ingresos_estimado"))
+            fmt_usd_eur_compacto(ultimo.get("ingresos_estimado"), fx)
             if es_valido(ultimo.get("ingresos_estimado"))
             else TEXTO_ND,
         )
@@ -221,8 +243,13 @@ def _linea_sorpresa(concepto: str, real, estimado) -> None:
         C.metrica(f"¿{concepto} superó estimaciones?", TEXTO_ND)
         return
     desviacion = (real - estimado) / abs(estimado) * 100
-    veredicto = "Superó" if desviacion > 0 else ("En línea" if abs(desviacion) < 0.5 else "No superó")
-    C.metrica(f"¿{concepto} superó estimaciones?", f"{veredicto} ({fmt_pct(desviacion)})")
+    if desviacion > 0:
+        veredicto, color = "Superó", C_VERDE
+    elif abs(desviacion) < 0.5:
+        veredicto, color = "En línea", C_AMBAR
+    else:
+        veredicto, color = "No superó", C_ROJO
+    C.metrica_color(f"¿{concepto} superó estimaciones?", f"{veredicto} ({fmt_pct(desviacion)})", color)
 
 
 def _diagnostico_info(p: dict) -> None:
@@ -250,6 +277,8 @@ def _bloque_3_grafico(a: dict) -> None:
     p, t = a["paquete"], a["tecnico"]
     fx = p.get("fx_usd_eur")
     info = p.get("info", {})
+    sector = p.get("sector")
+    precio = p.get("precio")
     C.titulo_bloque("Cotización · MACD y datos fundamentales y técnicos")
 
     C.grafico_precio_macd(p.get("historico"), t, p["ticker"])
@@ -258,18 +287,15 @@ def _bloque_3_grafico(a: dict) -> None:
     col_f, col_t = st.columns(2)
     with col_f:
         st.markdown("**Fundamentales**")
-        C.metrica("Capitalización", fmt_usd_eur(info.get("marketCap"), fx, 0)
-                  if es_valido(info.get("marketCap")) else TEXTO_ND)
-        C.metrica("PER (trailing)", fmt_num(info.get("trailingPE")))
-        C.metrica("Forward PER", fmt_num(info.get("forwardPE")))
-        C.metrica("PEG", fmt_num(info.get("trailingPegRatio") or info.get("pegRatio")))
-        C.metrica("Precio / Ventas", fmt_num(info.get("priceToSalesTrailing12Months")))
-        C.metrica("Precio / Valor contable", fmt_num(info.get("priceToBook")))
-        C.metrica("Margen neto", fmt_pct(info.get("profitMargins"), 1, ya_en_pct=False))
-        C.metrica("ROE", fmt_pct(info.get("returnOnEquity"), 1, ya_en_pct=False))
-        C.metrica("ROIC", fmt_pct(a["calidad"]["lecturas"].get("roic"), 1, ya_en_pct=False))
-        C.metrica("Deuda / Fondos propios", fmt_num(info.get("debtToEquity")))
-        C.metrica("Rentabilidad por dividendo", fmt_pct(info.get("dividendYield"), 2))
+        C.metrica(
+            "Capitalización",
+            fmt_usd_eur_compacto(info.get("marketCap"), fx)
+            if es_valido(info.get("marketCap"))
+            else TEXTO_ND,
+        )
+        _grupo_valoracion(info, sector)
+        _grupo_rentabilidad(info, sector, a["calidad"]["lecturas"].get("roic"))
+        _grupo_balance(info, fx)
     with col_t:
         st.markdown("**Técnicos**")
         C.metrica("RSI (14)", fmt_num(t.get("rsi"), 1))
@@ -277,10 +303,10 @@ def _bloque_3_grafico(a: dict) -> None:
         C.metrica("Señal MACD", fmt_num(t.get("macd_senal"), 3))
         C.metrica("ADX (14)", fmt_num(t.get("adx"), 1))
         C.metrica("ATR (14)", fmt_num(t.get("atr"), 2))
-        C.metrica("Media móvil 50", fmt_num(t.get("mm50")))
-        C.metrica("Media móvil 200", fmt_num(t.get("mm200")))
-        C.metrica("Máximo 52 semanas", fmt_num(t.get("max_52s")))
-        C.metrica("Mínimo 52 semanas", fmt_num(t.get("min_52s")))
+        _metrica_distancia("Media móvil 50", t.get("mm50"), precio)
+        _metrica_distancia("Media móvil 200", t.get("mm200"), precio)
+        _metrica_distancia("Máximo 52 semanas", t.get("max_52s"), precio)
+        _metrica_distancia("Mínimo 52 semanas", t.get("min_52s"), precio)
         C.metrica("Variación 1 año", fmt_pct(t.get("variacion_1a_pct")))
         C.metrica("Volumen medio 3 meses", fmt_compacto(t.get("volumen_medio_3m")))
 
@@ -288,6 +314,107 @@ def _bloque_3_grafico(a: dict) -> None:
         st.caption(f"Tipo de cambio aplicado: 1 USD = {fmt_num(fx, 4)} EUR (yfinance, tiempo real).")
     else:
         st.caption(f"Conversión a euros: {TEXTO_ND}.")
+
+
+def _metrica_distancia(etiqueta: str, valor: float | None, precio: float | None) -> None:
+    """Muestra el nivel (MM/máximo/mínimo) junto a su distancia % respecto al
+    precio actual, en verde si el precio está por encima y en rojo si está
+    por debajo (distancia positiva o negativa, tal cual pide el enunciado)."""
+    if not es_valido(valor):
+        C.metrica(etiqueta, TEXTO_ND)
+        return
+    if not es_valido(precio) or valor == 0:
+        C.metrica(etiqueta, fmt_num(valor))
+        return
+    distancia = (precio - valor) / valor * 100
+    color = C_VERDE if distancia >= 0 else C_ROJO
+    C.metrica_color(etiqueta, f"{fmt_num(valor)}  ({fmt_pct(distancia)})", color)
+
+
+def _fila_sector(etiqueta: str, valor, referencia_sector, menor_es_mejor: bool, es_pct: bool = False) -> None:
+    """Fila de Fundamentales comparada con la media del sector: verde si
+    destaca, y la media mostrada en gris a la derecha cuando existe."""
+    if not es_valido(valor):
+        C.metrica(etiqueta, TEXTO_ND)
+        return
+    texto = fmt_pct(valor, 1, ya_en_pct=False) if es_pct else fmt_num(valor)
+    bueno = es_favorable(valor, referencia_sector, menor_es_mejor)
+    extra = None
+    if es_valido(referencia_sector):
+        ref_txt = fmt_pct(referencia_sector, 1, ya_en_pct=False) if es_pct else fmt_num(referencia_sector)
+        extra = f"Sector: {ref_txt}"
+    C.metrica_color(etiqueta, texto, C_VERDE if bueno else None, extra)
+
+
+def _fila_umbral(etiqueta: str, valor, umbral: float, menor_es_mejor: bool, es_pct: bool = False) -> None:
+    """Fila de Fundamentales comparada con un umbral general (sin mediana
+    sectorial propia): verde si supera el umbral favorable."""
+    if not es_valido(valor):
+        C.metrica(etiqueta, TEXTO_ND)
+        return
+    texto = fmt_pct(valor, 1, ya_en_pct=False) if es_pct else fmt_num(valor)
+    bueno = es_favorable(valor, umbral, menor_es_mejor)
+    C.metrica_color(etiqueta, texto, C_VERDE if bueno else None)
+
+
+def _grupo_valoracion(info: dict, sector: str | None) -> None:
+    C.subgrupo("Valoración")
+    _fila_sector("PER (trailing)", info.get("trailingPE"), PER_MEDIANO_SECTOR.get(sector), True)
+    _fila_sector("PER Forward", info.get("forwardPE"), FORWARD_PER_MEDIANO_SECTOR.get(sector), True)
+    _fila_sector(
+        "PEG", info.get("trailingPegRatio") or info.get("pegRatio"), PEG_MEDIANO_SECTOR.get(sector), True
+    )
+    _fila_umbral("Precio / Ventas", info.get("priceToSalesTrailing12Months"), UMBRAL_PRECIO_VENTAS, True)
+    _fila_umbral("Precio / Valor contable", info.get("priceToBook"), UMBRAL_PRECIO_VALOR_CONTABLE, True)
+    _fila_sector("EV/EBITDA", info.get("enterpriseToEbitda"), EV_EBITDA_MEDIANO_SECTOR.get(sector), True)
+
+
+def _grupo_rentabilidad(info: dict, sector: str | None, roic: float | None) -> None:
+    C.subgrupo("Rentabilidad")
+    _fila_sector(
+        "Margen Neto", info.get("profitMargins"), MARGEN_NETO_MEDIANO_SECTOR.get(sector), False, es_pct=True
+    )
+    _fila_sector(
+        "Margen Operativo",
+        info.get("operatingMargins"),
+        MARGEN_OPERATIVO_MEDIANO_SECTOR.get(sector),
+        False,
+        es_pct=True,
+    )
+    _fila_umbral("Margen EBITDA", info.get("ebitdaMargins"), UMBRAL_MARGEN_EBITDA, False, es_pct=True)
+    _fila_sector("ROE", info.get("returnOnEquity"), ROE_MEDIANO_SECTOR.get(sector), False, es_pct=True)
+    _fila_umbral("ROIC", roic, UMBRAL_ROIC, False, es_pct=True)
+    _fila_umbral("ROA", info.get("returnOnAssets"), UMBRAL_ROA, False, es_pct=True)
+
+
+def _grupo_balance(info: dict, fx) -> None:
+    C.subgrupo("Balance y Caja")
+    caja, deuda = info.get("totalCash"), info.get("totalDebt")
+    caja_neta_positiva = es_valido(caja) and es_valido(deuda) and float(caja) > float(deuda)
+    C.metrica_color(
+        "Caja Total",
+        fmt_usd_eur_compacto(caja, fx) if es_valido(caja) else TEXTO_ND,
+        C_VERDE if caja_neta_positiva else None,
+    )
+    C.metrica_color(
+        "Deuda Total",
+        fmt_usd_eur_compacto(deuda, fx) if es_valido(deuda) else TEXTO_ND,
+        C_VERDE if caja_neta_positiva else None,
+    )
+    _fila_umbral("Ratio Deuda/Equity", info.get("debtToEquity"), UMBRAL_DEUDA_EQUITY, True)
+    _fila_umbral("Current Ratio", info.get("currentRatio"), UMBRAL_CURRENT_RATIO, False)
+    ocf = info.get("operatingCashflow")
+    C.metrica_color(
+        "Operating Cash Flow",
+        fmt_usd_eur_compacto(ocf, fx) if es_valido(ocf) else TEXTO_ND,
+        C_VERDE if es_valido(ocf) and float(ocf) > 0 else None,
+    )
+    fcf = info.get("freeCashflow")
+    C.metrica_color(
+        "Free Cash Flow",
+        fmt_usd_eur_compacto(fcf, fx) if es_valido(fcf) else TEXTO_ND,
+        C_VERDE if es_valido(fcf) and float(fcf) > 0 else None,
+    )
 
 
 # ============================================================== Bloque 4 ======
@@ -309,7 +436,7 @@ def _bloque_4_calidad(a: dict) -> None:
     )
     if es_valido(fv) and p.get("moneda") == "USD":
         st.markdown(
-            f'<div class="ss-precio-eur">{fmt_usd_eur(fv, fx).split(" / ")[-1] if es_valido(fx) else TEXTO_ND}</div>',
+            f'<div class="ss-precio-eur">{fmt_eur(fv, fx) if es_valido(fx) else TEXTO_ND}</div>',
             unsafe_allow_html=True,
         )
     alerta = v.get("alerta", {})
@@ -319,11 +446,16 @@ def _bloque_4_calidad(a: dict) -> None:
         st.caption("Peso doble aplicado al consenso: unanimidad y cobertura ≥ 10 analistas.")
 
     with st.expander("Desglose de la valoración"):
+        moneda = p.get("moneda") or ""
         for nombre, comp in v["componentes"].items():
             valor = comp["valor"]
             peso = v["pesos_aplicados"].get(_clave_peso(nombre))
             sufijo = f"  ·  peso {peso * 100:.0f} %" if peso else "  ·  excluido del cálculo"
-            C.metrica(nombre, (fmt_num(valor) if es_valido(valor) else TEXTO_ND) + sufijo)
+            if es_valido(valor):
+                texto = fmt_usd_eur(valor, fx) if moneda == "USD" else f"{fmt_num(valor)} {moneda}"
+            else:
+                texto = TEXTO_ND
+            C.metrica(nombre, texto + sufijo)
             for n in comp["detalle"].get("notas", []):
                 st.caption(f"↳ {n}")
         C.metrica("Cobertura del modelo", fmt_pct(v.get("cobertura", 0) * 100, 0))
@@ -418,11 +550,17 @@ def _bloque_6_plan(a: dict) -> None:
         )
         return
 
+    moneda = p.get("moneda") or ""
+    fx = p.get("fx_usd_eur")
+
+    def _precio_txt(valor: float) -> str:
+        return fmt_usd_eur(valor, fx) if moneda == "USD" else f"{fmt_num(valor)} {moneda}".strip()
+
     st.markdown("**Niveles de entrada**")
     for n in plan["entradas"]:
         C.nivel_plan(
             f"Entrada {n['nivel']} · {n['peso_capital'] * 100:.0f} % del capital",
-            fmt_num(n["precio"]),
+            _precio_txt(n["precio"]),
             fmt_pct(n["distancia_pct"]),
             n["motivos"],
         )
@@ -431,17 +569,17 @@ def _bloque_6_plan(a: dict) -> None:
     for n in plan["salidas"]:
         C.nivel_plan(
             f"Salida {n['nivel']} · {n['peso_posicion'] * 100:.0f} % de la posición",
-            fmt_num(n["precio"]),
+            _precio_txt(n["precio"]),
             fmt_pct(n["distancia_pct"]),
             n["motivos"],
         )
 
     st.markdown("**Stop loss**")
     sl = plan["stop_loss"]
-    C.nivel_plan("Stop loss", fmt_num(sl["precio"]), fmt_pct(sl["distancia_pct"]), [sl["base"]])
+    C.nivel_plan("Stop loss", _precio_txt(sl["precio"]), fmt_pct(sl["distancia_pct"]), [sl["base"]])
 
-    C.metrica("Precio medio estimado", fmt_num(plan["precio_medio_estimado"]))
-    C.metrica("Objetivo medio estimado", fmt_num(plan["objetivo_medio_estimado"]))
+    C.metrica("Precio medio estimado", _precio_txt(plan["precio_medio_estimado"]))
+    C.metrica("Objetivo medio estimado", _precio_txt(plan["objetivo_medio_estimado"]))
     C.metrica("Ratio riesgo / recompensa", fmt_num(plan["ratio_riesgo_recompensa"]))
 
     st.divider()
@@ -450,17 +588,22 @@ def _bloque_6_plan(a: dict) -> None:
 
 def _boton_paper_trading(a: dict, plan: dict) -> None:
     p = a["paquete"]
+    fx = p.get("fx_usd_eur")
+    moneda = p.get("moneda") or ""
     nivel_1 = plan["entradas"][0]["precio"]
     ejecutable = plan.get("ejecutable", False)
     conectado = bd_supabase.hay_conexion()
+
+    def _precio_txt(valor: float) -> str:
+        return fmt_usd_eur(valor, fx) if moneda == "USD" else f"{fmt_num(valor)} {moneda}".strip()
 
     if not ejecutable:
         st.button(
             "Ejecutar plan en Paper Trading",
             disabled=True,
             use_container_width=True,
-            help=f"El precio actual ({fmt_num(p.get('precio'))}) todavía no ha alcanzado "
-            f"el nivel 1 de entrada ({fmt_num(nivel_1)}).",
+            help=f"El precio actual ({_precio_txt(p.get('precio'))}) todavía no ha alcanzado "
+            f"el nivel 1 de entrada ({_precio_txt(nivel_1)}).",
         )
         st.caption("El plan se activará cuando la cotización alcance o pierda el nivel 1 de entrada.")
         return
