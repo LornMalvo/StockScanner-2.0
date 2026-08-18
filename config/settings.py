@@ -175,6 +175,12 @@ ROE_MEDIANO_SECTOR = {
     "Utilities": 0.09,
     "Real Estate": 0.07,
 }
+
+# ----------------------------- medias sectoriales adicionales (fallback) ----
+# Mismo criterio que las tablas anteriores: estimaciones heurísticas propias,
+# usadas solo para resaltar en el apartado "Fundamentales" (Bloque 3) qué
+# métricas destacan sobre la media de su sector. No sustituyen una fuente de
+# comparables reales; si se detecta una mejor, migrar aquí.
 FORWARD_PER_MEDIANO_SECTOR = {
     "Technology": 24.0,
     "Communication Services": 17.0,
@@ -182,10 +188,10 @@ FORWARD_PER_MEDIANO_SECTOR = {
     "Consumer Defensive": 19.0,
     "Healthcare": 19.0,
     "Financial Services": 12.0,
-    "Industrials": 19.0,
+    "Industrials": 18.0,
     "Energy": 11.0,
-    "Basic Materials": 14.0,
-    "Utilities": 17.0,
+    "Basic Materials": 13.0,
+    "Utilities": 16.0,
     "Real Estate": 26.0,
 }
 PEG_MEDIANO_SECTOR = {
@@ -194,51 +200,130 @@ PEG_MEDIANO_SECTOR = {
     "Consumer Cyclical": 1.7,
     "Consumer Defensive": 2.2,
     "Healthcare": 1.9,
-    "Financial Services": 1.3,
-    "Industrials": 1.6,
-    "Energy": 1.4,
+    "Financial Services": 1.4,
+    "Industrials": 1.8,
+    "Energy": 1.3,
     "Basic Materials": 1.5,
     "Utilities": 2.5,
-    "Real Estate": 2.0,
+    "Real Estate": 2.3,
 }
 EV_EBITDA_MEDIANO_SECTOR = {
-    "Technology": 16.0,
-    "Communication Services": 9.0,
-    "Consumer Cyclical": 11.0,
+    "Technology": 18.0,
+    "Communication Services": 10.0,
+    "Consumer Cyclical": 12.0,
     "Consumer Defensive": 13.0,
-    "Healthcare": 13.0,
-    "Financial Services": 10.0,
+    "Healthcare": 14.0,
+    "Financial Services": 11.0,
     "Industrials": 12.0,
     "Energy": 6.0,
-    "Basic Materials": 7.0,
+    "Basic Materials": 8.0,
     "Utilities": 10.0,
-    "Real Estate": 15.0,
+    "Real Estate": 16.0,
+}
+PS_MEDIANO_SECTOR = {
+    "Technology": 6.0,
+    "Communication Services": 3.0,
+    "Consumer Cyclical": 1.5,
+    "Consumer Defensive": 1.3,
+    "Healthcare": 3.0,
+    "Financial Services": 3.0,
+    "Industrials": 1.8,
+    "Energy": 1.2,
+    "Basic Materials": 1.3,
+    "Utilities": 2.2,
+    "Real Estate": 6.0,
+}
+PB_MEDIANO_SECTOR = {
+    "Technology": 8.0,
+    "Communication Services": 3.0,
+    "Consumer Cyclical": 4.0,
+    "Consumer Defensive": 5.0,
+    "Healthcare": 4.0,
+    "Financial Services": 1.5,
+    "Industrials": 3.5,
+    "Energy": 1.8,
+    "Basic Materials": 2.0,
+    "Utilities": 1.8,
+    "Real Estate": 2.0,
 }
 MARGEN_OPERATIVO_MEDIANO_SECTOR = {
     "Technology": 0.22,
-    "Communication Services": 0.15,
-    "Consumer Cyclical": 0.08,
+    "Communication Services": 0.16,
+    "Consumer Cyclical": 0.09,
     "Consumer Defensive": 0.08,
     "Healthcare": 0.13,
     "Financial Services": 0.25,
     "Industrials": 0.11,
     "Energy": 0.11,
     "Basic Materials": 0.10,
-    "Utilities": 0.18,
-    "Real Estate": 0.30,
+    "Utilities": 0.20,
+    "Real Estate": 0.35,
 }
-
-# ------------------------------------------ umbrales generales sin sector -----
-# Se usan en Fundamentales solo para las métricas que no tienen mediana
-# sectorial propia arriba. Son heurísticas razonables, no verdad absoluta;
-# ajustables aquí sin tocar la interfaz.
-UMBRAL_PRECIO_VENTAS = 2.5
-UMBRAL_PRECIO_VALOR_CONTABLE = 3.0
-UMBRAL_MARGEN_EBITDA = 0.20
-UMBRAL_ROIC = 0.10
-UMBRAL_ROA = 0.06
-UMBRAL_CURRENT_RATIO = 1.5
-UMBRAL_DEUDA_EQUITY = 100.0
+MARGEN_EBITDA_MEDIANO_SECTOR = {
+    "Technology": 0.30,
+    "Communication Services": 0.25,
+    "Consumer Cyclical": 0.13,
+    "Consumer Defensive": 0.12,
+    "Healthcare": 0.18,
+    "Financial Services": 0.30,
+    "Industrials": 0.16,
+    "Energy": 0.20,
+    "Basic Materials": 0.16,
+    "Utilities": 0.35,
+    "Real Estate": 0.45,
+}
+ROIC_MEDIANO_SECTOR = {
+    "Technology": 0.16,
+    "Communication Services": 0.10,
+    "Consumer Cyclical": 0.10,
+    "Consumer Defensive": 0.11,
+    "Healthcare": 0.09,
+    "Financial Services": 0.08,
+    "Industrials": 0.10,
+    "Energy": 0.07,
+    "Basic Materials": 0.07,
+    "Utilities": 0.05,
+    "Real Estate": 0.05,
+}
+ROA_MEDIANO_SECTOR = {
+    "Technology": 0.10,
+    "Communication Services": 0.06,
+    "Consumer Cyclical": 0.05,
+    "Consumer Defensive": 0.06,
+    "Healthcare": 0.05,
+    "Financial Services": 0.01,
+    "Industrials": 0.05,
+    "Energy": 0.05,
+    "Basic Materials": 0.04,
+    "Utilities": 0.03,
+    "Real Estate": 0.02,
+}
+DEBT_EQUITY_MEDIANO_SECTOR = {
+    "Technology": 40.0,
+    "Communication Services": 90.0,
+    "Consumer Cyclical": 80.0,
+    "Consumer Defensive": 70.0,
+    "Healthcare": 50.0,
+    "Financial Services": 150.0,
+    "Industrials": 90.0,
+    "Energy": 60.0,
+    "Basic Materials": 70.0,
+    "Utilities": 130.0,
+    "Real Estate": 100.0,
+}
+CURRENT_RATIO_MEDIANO_SECTOR = {
+    "Technology": 2.5,
+    "Communication Services": 1.2,
+    "Consumer Cyclical": 1.5,
+    "Consumer Defensive": 1.0,
+    "Healthcare": 1.8,
+    "Financial Services": 1.1,
+    "Industrials": 1.5,
+    "Energy": 1.3,
+    "Basic Materials": 1.7,
+    "Utilities": 0.9,
+    "Real Estate": 1.2,
+}
 
 # ------------------------------------------------------------------ caché ----
 TTL_PRECIO = 300        # 5 min
