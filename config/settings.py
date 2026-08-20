@@ -65,38 +65,57 @@ BANDAS_VALORACION = [
 PESOS_FAIR_VALUE = {
     "dcf": 0.30,
     "multiplos": 0.30,
-    "ddm": 0.15,
+    "ev_ebitda": 0.15,
     "consenso": 0.25,
 }
-# El consenso duplica peso solo si es unánime (100% de recomendaciones de compra)
-# y lo cubren >= 10 analistas.
+# El consenso duplica peso si lo cubren >= 10 analistas. Se retiró el
+# requisito adicional de unanimidad (100% de recomendaciones de compra):
+# con cobertura amplia (ej. AVGO, 45 analistas) la probabilidad de
+# unanimidad total es casi nula, así que esa condición dejaba el peso
+# doble inactivo en la práctica incluso en los valores mejor cubiertos.
 CONSENSO_MIN_ANALISTAS = 10
-CONSENSO_UNANIMIDAD = 1.0
 
 # ------------------------------------------------------ parámetros de DCF ----
 DCF_ANIOS = 5
 DCF_WACC_DEFECTO = 0.09
 DCF_G_TERMINAL = 0.025
-DCF_CRECIMIENTO_MAX = 0.20  # se recorta el crecimiento estimado a este techo
+DCF_CRECIMIENTO_MAX = 0.20  # techo por defecto si el sector no tiene uno propio
 DCF_CRECIMIENTO_MIN = -0.05
+DCF_CRECIMIENTO_MAX_ABSOLUTO = 0.40  # tope de seguridad aun con bonus por cobertura
 
-# ------------------------------------------------------ parámetros de DDM ----
-DDM_RETORNO_EXIGIDO = 0.09
-DDM_G_MAX = 0.06
+# Techo de crecimiento diferenciado por sector: sectores de crecimiento
+# estructural alto (Tecnología, Salud) pueden sostener tasas más altas que
+# sectores maduros (Utilities, Energy) sin que sea una señal de exceso de
+# optimismo. Sustituye al techo único global de antes.
+DCF_CRECIMIENTO_MAX_SECTOR = {
+    "Technology": 0.30,
+    "Communication Services": 0.25,
+    "Healthcare": 0.25,
+    "Consumer Cyclical": 0.20,
+    "Consumer Defensive": 0.12,
+    "Industrials": 0.18,
+    "Financial Services": 0.15,
+    "Energy": 0.12,
+    "Basic Materials": 0.15,
+    "Utilities": 0.08,
+    "Real Estate": 0.12,
+}
 
 # --------------------------------------------- pesos de calidad (Bloque 4) ----
 PESOS_CALIDAD = {
-    "piotroski": 22,
-    "per_vs_sector": 8,
-    "per_vs_historico": 8,
-    "forward_per": 6,
-    "margen_neto": 10,
-    "roe": 10,
-    "roic": 10,
-    "peg": 8,
+    "piotroski": 18,
+    "per_vs_sector": 7,
+    "per_vs_historico": 6,
+    "forward_per": 5,
+    "margen_neto": 9,
+    "roe": 9,
+    "roic": 9,
+    "peg": 7,
     "tendencia_ingresos": 8,
-    "tendencia_beneficios": 6,
+    "tendencia_beneficios": 7,
     "calidad_beneficio": 4,
+    "fcf_solidez": 5,
+    "cobertura_intereses": 6,
 }
 
 # ----------------------------------------------- pesos de timing (Bloque 5) ----
