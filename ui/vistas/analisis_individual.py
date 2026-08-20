@@ -445,7 +445,7 @@ def _bloque_4_calidad(a: dict) -> None:
             valor = comp["valor"]
             peso = v["pesos_aplicados"].get(_clave_peso(nombre))
             sufijo = f"  ·  peso {peso * 100:.0f} %" if peso else "  ·  excluido del cálculo"
-            C.metrica(nombre, _precio_fmt(valor, p) + sufijo)
+            C.metrica(nombre, _precio_fmt(valor, p) + sufijo, ayuda=_EXPLICACION_METODO_FV.get(nombre))
             for n in comp["detalle"].get("notas", []):
                 st.caption(f"↳ {n}")
         C.metrica("Cobertura del modelo", fmt_pct(v.get("cobertura", 0) * 100, 0))
@@ -454,8 +454,25 @@ def _bloque_4_calidad(a: dict) -> None:
         pio = q["piotroski"]
         C.metrica("Puntuación", f"{pio['puntos']} / {pio['evaluados']} criterios evaluables")
         for criterio, cumple in pio["criterios"].items():
-            simbolo = "✔" if cumple else ("✘" if cumple is False else TEXTO_ND)
+            simbolo = "✔  (+1)" if cumple else ("✘  (+0)" if cumple is False else TEXTO_ND)
             C.metrica(criterio, simbolo)
+
+    with st.expander("Desglose de la puntuación de calidad"):
+        sub = q["subpuntuaciones"]
+        pesos_aplic = q.get("pesos_aplicados", {})
+        for clave, etiqueta in _ETIQUETAS_CALIDAD.items():
+            valor_sub = sub.get(clave)
+            peso_norm = pesos_aplic.get(clave)
+            if es_valido(valor_sub) and peso_norm:
+                contribucion = valor_sub * peso_norm
+                C.metrica(
+                    etiqueta,
+                    f"{valor_sub:.0f}/100  ·  peso {peso_norm * 100:.0f} %  ·  aporta {contribucion:.1f} pts",
+                    ayuda=_EXPLICACION_CALIDAD.get(clave),
+                )
+            else:
+                C.metrica(etiqueta, "Excluido (sin dato)", ayuda=_EXPLICACION_CALIDAD.get(clave))
+        C.metrica("Cobertura del modelo", fmt_pct(q.get("cobertura", 0) * 100, 0))
 
     with st.expander("Métricas de calidad"):
         L = q["lecturas"]
@@ -493,6 +510,67 @@ def _clave_peso(nombre: str) -> str:
         "EV/EBITDA sectorial": "ev_ebitda",
         "Consenso analistas": "consenso",
     }.get(nombre, nombre.lower())
+
+
+# Texto explicativo por método de valoración -- se muestra como tooltip
+# (atributo `title`, ver `C.metrica`) para que quede claro con qué datos se
+# calcula cada número sin saturar la pantalla con texto fijo.
+_EXPLICACION_METODO_FV = {
+    "DCF": (
+        "Descuento de Flujos de Caja: proyecta el FCF actual a 5 años con "
+        "crecimiento decreciente hasta un terminal del 2,5%, más valor "
+        "terminal, descontado al WACC (CAPM simplificado por beta). Usa "
+        "FCF más reciente, caja y deuda totales, y acciones en circulación."
+    ),
+    "Múltiplos": (
+        "Media entre el PER mediano del sector y el PER mediano al que ha "
+        "cotizado la propia empresa en los últimos 5 años, aplicado al BPA "
+        "(Forward si está disponible, si no TTM)."
+    ),
+    "EV/EBITDA sectorial": (
+        "Equity Value = EBITDA actual × múltiplo EV/EBITDA mediano del "
+        "sector − deuda neta; el resultado se divide entre las acciones en "
+        "circulación."
+    ),
+    "Consenso analistas": (
+        "Precio objetivo medio de los analistas que cubren el valor "
+        "(Finnhub/Yahoo). Pesa el doble en la media si lo cubren 10 o más "
+        "analistas."
+    ),
+}
+
+# Etiqueta legible + explicación por sub-métrica de calidad, en el mismo
+# orden en que se calculan dentro de `puntuar_calidad`.
+_ETIQUETAS_CALIDAD = {
+    "piotroski": "Piotroski F-Score",
+    "per_vs_sector": "PER vs sector",
+    "per_vs_historico": "PER vs histórico propio (5a, mediana)",
+    "forward_per": "Forward PER vs PER actual",
+    "margen_neto": "Margen neto vs sector",
+    "roe": "ROE vs sector",
+    "roic": "ROIC",
+    "peg": "PEG",
+    "tendencia_ingresos": "Tendencia ingresos (CAGR × estabilidad)",
+    "tendencia_beneficios": "Tendencia beneficios (CAGR × estabilidad)",
+    "calidad_beneficio": "Calidad del beneficio (FCF/BN)",
+    "fcf_solidez": "Solidez del FCF",
+    "cobertura_intereses": "Cobertura de intereses (EBIT/Gastos)",
+}
+_EXPLICACION_CALIDAD = {
+    "piotroski": "9 criterios binarios (rentabilidad, apalancamiento, eficiencia) sobre datos anuales; normalizado a 0-100.",
+    "per_vs_sector": "PER actual frente al PER mediano del sector: cuanto más barato relativo, más puntúa.",
+    "per_vs_historico": "PER actual frente al PER mediano al que ha cotizado la propia empresa en 5 años.",
+    "forward_per": "Compara el PER Forward con el PER actual: si baja, el mercado espera mejora de beneficios.",
+    "margen_neto": "Margen neto actual frente a la mediana del sector.",
+    "roe": "ROE actual frente a la mediana del sector.",
+    "roic": "Beneficio operativo después de impuestos sobre el capital invertido (deuda + fondos propios).",
+    "peg": "PER entre la tasa de crecimiento de beneficios: por debajo de 1 se considera barato para lo que crece.",
+    "tendencia_ingresos": "CAGR de ingresos multiplicado por un factor de estabilidad trimestral (0,55×-1,0×).",
+    "tendencia_beneficios": "CAGR de beneficio neto multiplicado por un factor de estabilidad trimestral (0,55×-1,0×).",
+    "calidad_beneficio": "FCF dividido entre el beneficio neto: cuánto del beneficio contable se convierte en caja real.",
+    "fcf_solidez": "100 si FCF>0; 50 si FCF<0 pero el flujo de caja operativo sigue siendo positivo (expansión); 0 si ambos son negativos.",
+    "cobertura_intereses": "EBIT dividido entre el gasto en intereses: capacidad de pagar la deuda con el beneficio operativo actual.",
+}
 
 
 # ============================================================== Bloque 5 ======
