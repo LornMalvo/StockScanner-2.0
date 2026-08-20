@@ -551,6 +551,7 @@ def puntuar_calidad(paquete: dict, fair_value: dict) -> dict:
         "lecturas": lecturas,
         "excluidos": resultado["excluidos"],
         "cobertura": resultado["cobertura"],
+        "pesos_aplicados": resultado["usados"],
         "piotroski": piotroski,
     }
 
