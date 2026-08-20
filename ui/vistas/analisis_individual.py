@@ -66,11 +66,6 @@ def ejecutar_analisis(ticker: str) -> dict:
     calidad = valoracion.puntuar_calidad(paquete, fair_value)
     momento = timing.calcular_timing(paquete, tecnico, fair_value, calidad)
     plan = plan_dca.construir_plan(paquete, tecnico, fair_value)
-    st.json({                                              
-        "tecnico": {k: v for k, v in tecnico.items() if k != "series"},
-        "fair_value": fair_value,
-        "plan": plan,
-    })                
     veredicto = plan_dca.veredicto_final(calidad, fair_value, momento, plan)
 
     return {
@@ -443,7 +438,7 @@ def _bloque_4_calidad(a: dict) -> None:
     C.alerta(alerta.get("etiqueta", TEXTO_ND), alerta.get("color", "#94a3b8"))
     C.metrica("Potencial (upside)", fmt_pct(v.get("upside_pct")))
     if v.get("peso_consenso_doble"):
-        st.caption("Peso doble aplicado al consenso: unanimidad y cobertura ≥ 10 analistas.")
+        st.caption("Peso doble aplicado al consenso: cobertura ≥ 10 analistas.")
 
     with st.expander("Desglose de la valoración"):
         for nombre, comp in v["componentes"].items():
@@ -466,15 +461,27 @@ def _bloque_4_calidad(a: dict) -> None:
         L = q["lecturas"]
         C.metrica("PER actual", fmt_num(L.get("per")))
         C.metrica("PER mediano del sector", fmt_num(L.get("per_sector")))
-        C.metrica("PER medio 5 años", fmt_num(L.get("per_historico_5a")))
+        C.metrica("PER mediano 5 años (propio)", fmt_num(L.get("per_historico_5a")))
         C.metrica("Forward PER", fmt_num(L.get("forward_per")))
         C.metrica("Margen neto", fmt_pct(L.get("margen_neto"), 1, ya_en_pct=False))
         C.metrica("ROE", fmt_pct(L.get("roe"), 1, ya_en_pct=False))
         C.metrica("ROIC", fmt_pct(L.get("roic"), 1, ya_en_pct=False))
         C.metrica("PEG", fmt_num(L.get("peg")))
         C.metrica("CAGR ingresos", fmt_pct(L.get("cagr_ingresos"), 1, ya_en_pct=False))
+        C.metrica("Estabilidad crecimiento ingresos", f"×{fmt_num(L.get('estabilidad_ingresos'), 2)}")
         C.metrica("CAGR beneficios", fmt_pct(L.get("cagr_beneficios"), 1, ya_en_pct=False))
+        C.metrica("Estabilidad crecimiento beneficios", f"×{fmt_num(L.get('estabilidad_beneficios'), 2)}")
         C.metrica("Calidad del beneficio (FCF/BN)", fmt_num(L.get("fcf_sobre_beneficio")))
+        fcf_solidez = q["subpuntuaciones"].get("fcf_solidez")
+        if es_valido(fcf_solidez):
+            if fcf_solidez >= 100:
+                etiqueta_fcf = "Positivo"
+            elif fcf_solidez > 0:
+                etiqueta_fcf = "Negativo por CAPEX de expansión (CFO positivo)"
+            else:
+                etiqueta_fcf = "Negativo (operativa débil o sin datos de CFO)"
+            C.metrica("Solidez del FCF", etiqueta_fcf)
+        C.metrica("Cobertura de intereses (EBIT/Gasto intereses)", fmt_num(L.get("cobertura_intereses")))
         if q["excluidos"]:
             st.caption("Excluidos por falta de dato: " + ", ".join(q["excluidos"]))
 
@@ -483,7 +490,7 @@ def _clave_peso(nombre: str) -> str:
     return {
         "DCF": "dcf",
         "Múltiplos": "multiplos",
-        "DDM": "ddm",
+        "EV/EBITDA sectorial": "ev_ebitda",
         "Consenso analistas": "consenso",
     }.get(nombre, nombre.lower())
 
