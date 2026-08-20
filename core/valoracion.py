@@ -139,6 +139,13 @@ def valorar_dcf(paquete: dict) -> tuple[float | None, dict]:
             "wacc": wacc,
             "valor_empresa": valor_presente,
             "valor_accion": por_accion,
+            "formula": (
+                f"FCF base {fcf_base / 1e6:,.0f} M$ → proyectado {DCF_ANIOS} años con crecimiento "
+                f"inicial {crecimiento * 100:.1f}% decayendo a terminal {DCF_G_TERMINAL * 100:.1f}%, "
+                f"descontado a WACC {wacc * 100:.1f}%. Equity = VP flujos ({valor_presente / 1e6:,.0f} M$) "
+                f"+ caja ({caja / 1e6:,.0f} M$) − deuda ({deuda / 1e6:,.0f} M$), "
+                f"÷ {acciones / 1e6:,.0f} M acciones → {por_accion:,.2f} $"
+            ),
         }
     )
     return (por_accion if por_accion > 0 else None), detalle
@@ -162,6 +169,12 @@ def valorar_multiplos(paquete: dict) -> tuple[float | None, dict]:
         return None, detalle
 
     per_justo = sum(candidatos) / len(candidatos)
+    partes = []
+    if es_valido(per_sector):
+        partes.append(f"PER sector {per_sector:.1f}×")
+    if es_valido(per_historico):
+        partes.append(f"PER histórico propio 5a (mediana) {per_historico:.1f}×")
+    bpa_origen = "Forward" if es_valido(info.get("forwardEps")) else "TTM"
     detalle.update(
         {
             "bpa": bpa,
@@ -169,6 +182,10 @@ def valorar_multiplos(paquete: dict) -> tuple[float | None, dict]:
             "per_historico_5a": per_historico,
             "per_justo": per_justo,
             "valor_accion": per_justo * bpa,
+            "formula": (
+                f"PER justo = media [ {' ; '.join(partes)} ] = {per_justo:.1f}× "
+                f"× BPA {bpa_origen} {bpa:,.2f} $ → {per_justo * bpa:,.2f} $"
+            ),
         }
     )
     return per_justo * bpa, detalle
@@ -220,6 +237,11 @@ def valorar_ev_ebitda(paquete: dict) -> tuple[float | None, dict]:
             "deuda_neta": deuda_neta,
             "equity_value": equity_value,
             "valor_accion": por_accion,
+            "formula": (
+                f"[ EBITDA {ebitda / 1e6:,.0f} M$ × múltiplo sector {multiplo_sector:.1f}× "
+                f"− deuda neta {deuda_neta / 1e6:,.0f} M$ ] ÷ {acciones / 1e6:,.0f} M acciones "
+                f"→ {por_accion:,.2f} $"
+            ),
         }
     )
     return (por_accion if por_accion > 0 else None), detalle
@@ -278,6 +300,7 @@ def calcular_fair_value(paquete: dict) -> dict:
     mult, det_mult = valorar_multiplos(paquete)
     ev_ebitda, det_ev_ebitda = valorar_ev_ebitda(paquete)
     objetivo, multiplicador = _consenso_ponderable(paquete.get("consenso", {}))
+    n_analistas = paquete.get("consenso", {}).get("n_analistas")
 
     pesos = dict(PESOS_FAIR_VALUE)
     pesos["consenso"] = pesos["consenso"] * multiplicador
@@ -304,6 +327,13 @@ def calcular_fair_value(paquete: dict) -> dict:
                     "n_analistas": paquete.get("consenso", {}).get("n_analistas"),
                     "unanimidad": paquete.get("consenso", {}).get("unanimidad"),
                     "notas": [] if es_valido(objetivo) else ["Sin cobertura de analistas"],
+                    "formula": (
+                        f"Precio objetivo medio de {n_analistas:.0f} analistas"
+                        + (" (⩾10 → peso doble en la media)" if multiplicador == 2.0 else "")
+                        + f" → {objetivo:,.2f} $"
+                        if es_valido(objetivo) and es_valido(n_analistas)
+                        else None
+                    ),
                 },
             },
         },
@@ -551,7 +581,6 @@ def puntuar_calidad(paquete: dict, fair_value: dict) -> dict:
         "lecturas": lecturas,
         "excluidos": resultado["excluidos"],
         "cobertura": resultado["cobertura"],
-        "pesos_aplicados": resultado["usados"],
         "piotroski": piotroski,
     }
 
