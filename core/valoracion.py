@@ -424,6 +424,31 @@ def puntuar_calidad(paquete: dict, fair_value: dict) -> dict:
     if es_valido(peg) and peg > 0:
         sub["peg"] = escalar(peg, 3.0, 0.8)
 
+    # 8b. EV/EBITDA frente a la mediana del sector. A diferencia del PER, no
+    # lo distorsionan ni el apalancamiento ni el tipo impositivo ni el peso
+    # de las amortizaciones, así que aporta una lectura de valoración
+    # independiente de las tres basadas en PER.
+    ev = primero_valido(info.get("enterpriseValue"))
+    ebitda_info = primero_valido(info.get("ebitda"))
+    if not es_valido(ev):
+        cap = primero_valido(info.get("marketCap"))
+        deuda_ev = primero_valido(info.get("totalDebt"))
+        caja_ev = primero_valido(info.get("totalCash"))
+        if es_valido(cap):
+            ev = cap + (deuda_ev or 0.0) - (caja_ev or 0.0)
+    ev_ebitda = (
+        ev / ebitda_info if es_valido(ev) and es_valido(ebitda_info) and ebitda_info > 0 else None
+    )
+    ref_ev_ebitda = EV_EBITDA_MEDIANO_SECTOR.get(sector)
+    lecturas["ev_ebitda"] = ev_ebitda
+    lecturas["ev_ebitda_sector"] = ref_ev_ebitda
+    if es_valido(ev_ebitda) and ev_ebitda > 0:
+        sub["ev_ebitda"] = (
+            escalar(ev_ebitda / ref_ev_ebitda, 1.6, 0.6)
+            if es_valido(ref_ev_ebitda) and ref_ev_ebitda
+            else escalar(ev_ebitda, 25.0, 8.0)
+        )
+
     # 9-10. Tendencia de ingresos y beneficios: CAGR anual ponderado por
     # estabilidad trimestral. Un CAGR alto pero errático (un solo trimestre
     # extraordinario, o uno muy malo, distorsionando el conjunto) premia
@@ -447,13 +472,20 @@ def puntuar_calidad(paquete: dict, fair_value: dict) -> dict:
     if es_valido(cagr_ben):
         sub["tendencia_beneficios"] = escalar(cagr_ben, -0.15, 0.25) * estab_ben
 
-    # 11. Calidad del beneficio: FCF / Beneficio neto
+    # 11. Calidad del beneficio: FCF / Beneficio neto.
+    # Escala 0,5x -> 1,0x: convertir en caja el 100% del beneficio contable
+    # ya es lo máximo exigible, así que 1,0x satura la puntuación. Los
+    # anclajes anteriores (0,4 -> 1,2) exigían generar un 120% del beneficio
+    # en caja para llegar al máximo -- algo que solo ocurre de forma
+    # sostenida en negocios con fuertes cargos no-caja (amortización de
+    # intangibles) -- y dejaban una conversión sana de 0,9x en un pobre
+    # 3,1/5, penalizando a empresas sin nada que reprochar.
     fcf = primero_valido(info.get("freeCashflow"))
     neto = primero_valido(info.get("netIncomeToCommon"), valor_anio(beneficio, 0))
     calidad_beneficio = fcf / neto if es_valido(fcf) and es_valido(neto) and neto > 0 else None
     lecturas["fcf_sobre_beneficio"] = calidad_beneficio
     if es_valido(calidad_beneficio):
-        sub["calidad_beneficio"] = escalar(calidad_beneficio, 0.4, 1.2)
+        sub["calidad_beneficio"] = escalar(calidad_beneficio, 0.5, 1.0)
 
     # 12. Solidez del FCF: no es lo mismo un FCF negativo por CAPEX de
     # expansión (CFO sigue positivo -- negocio operativo sano, invirtiendo
