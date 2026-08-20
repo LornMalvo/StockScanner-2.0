@@ -32,11 +32,23 @@ def boton_favorito(favorito: bool, key: str, ayuda: str | None = None) -> bool:
     )
 
 
-def metrica(etiqueta: str, valor: str) -> None:
-    """Fila etiqueta/valor. Los valores ausentes se marcan explícitamente."""
+def metrica(etiqueta: str, valor: str, ayuda: str | None = None) -> None:
+    """Fila etiqueta/valor. Los valores ausentes se marcan explícitamente.
+
+    Si se pasa `ayuda`, la etiqueta muestra un tooltip nativo del navegador
+    (atributo `title`) al posar el ratón encima -- sin dependencias nuevas,
+    aunque no es accesible por tacto puro en móvil (ahí queda como texto
+    normal, sin el subrayado punteado)."""
     clase = "ss-nd" if valor == TEXTO_ND else ""
+    if ayuda:
+        etiqueta_html = (
+            f'<span title="{html.escape(ayuda)}" '
+            f'style="cursor:help;border-bottom:1px dotted #94a3b8">{html.escape(etiqueta)}</span>'
+        )
+    else:
+        etiqueta_html = f"<span>{html.escape(etiqueta)}</span>"
     st.markdown(
-        f'<div class="ss-metrica"><span>{html.escape(etiqueta)}</span>'
+        f'<div class="ss-metrica">{etiqueta_html}'
         f'<span class="{clase}">{html.escape(str(valor))}</span></div>',
         unsafe_allow_html=True,
     )
