@@ -599,6 +599,13 @@ def _bloque_4_calidad(a: dict) -> None:
             if es_valido(fwd) and es_valido(per)
             else "PER Forward vs PER actual",
         )
+        eve, eve_sector = L.get("ev_ebitda"), L.get("ev_ebitda_sector")
+        _linea(
+            "ev_ebitda",
+            f"EV/EBITDA {eve:.1f}× vs sector {eve_sector:.1f}×"
+            if es_valido(eve) and es_valido(eve_sector)
+            else (f"EV/EBITDA {eve:.1f}×" if es_valido(eve) else "EV/EBITDA vs sector"),
+        )
         per_hist = L.get("per_historico_5a")
         _linea(
             "per_vs_historico",
