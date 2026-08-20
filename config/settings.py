@@ -132,10 +132,11 @@ BLOQUES_CALIDAD = {
         "liquidez_creciente": 1,
     },
     "IV. Valoración Relativa": {
-        "peg": 10,
-        "forward_per": 8,
-        "per_vs_historico": 4,
-        "per_vs_sector": 3,
+        "peg": 8,
+        "forward_per": 7,
+        "ev_ebitda": 5,
+        "per_vs_historico": 3,
+        "per_vs_sector": 2,
     },
 }
 # Vista plana (métrica -> peso) para `ponderar()`, que redistribuye el peso
