@@ -12,10 +12,13 @@ from config.settings import (
     C_TEXTO_TENUE,
     C_VERDE,
     CURRENT_RATIO_MEDIANO_SECTOR,
+    C_AMBAR,
+    C_VERDE_OSCURO,
     DEBT_EQUITY_MEDIANO_SECTOR,
     EV_EBITDA_MEDIANO_SECTOR,
     FORWARD_PER_MEDIANO_SECTOR,
     MARGEN_EBITDA_MEDIANO_SECTOR,
+    MARGEN_BRUTO_MEDIANO_SECTOR,
     MARGEN_NETO_MEDIANO_SECTOR,
     MARGEN_OPERATIVO_MEDIANO_SECTOR,
     PB_MEDIANO_SECTOR,
@@ -449,120 +452,169 @@ def _bloque_4_calidad(a: dict) -> None:
             C.metrica(nombre, _precio_fmt(valor, p) + sufijo)
             for n in comp["detalle"].get("notas", []):
                 st.caption(f"↳ {n}")
-            formula = comp["detalle"].get("formula")
-            if formula:
-                ver_calculo = st.toggle(
-                    "Ver cálculo", key=f"toggle_formula_{_clave_peso(nombre)}_{p['ticker']}"
-                )
-                if ver_calculo:
-                    st.caption(formula)
         C.metrica("Cobertura del modelo", fmt_pct(v.get("cobertura", 0) * 100, 0))
-
-    with st.expander("Piotroski F-Score"):
-        pio = q["piotroski"]
-        C.metrica("Puntuación", f"{pio['puntos']} / {pio['evaluados']} criterios evaluables")
-        for criterio, cumple in pio["criterios"].items():
-            simbolo = "✔  (+1)" if cumple else ("✘  (+0)" if cumple is False else TEXTO_ND)
-            C.metrica(criterio, simbolo)
 
     with st.expander("Métricas de calidad"):
         L = q["lecturas"]
         sub = q["subpuntuaciones"]
         sector = p.get("sector")
         ref_margen = MARGEN_NETO_MEDIANO_SECTOR.get(sector)
+        ref_bruto = MARGEN_BRUTO_MEDIANO_SECTOR.get(sector)
         ref_roe = ROE_MEDIANO_SECTOR.get(sector)
 
-        def _pts(clave: str) -> str:
-            """'+X,X/máx' según la sub-puntuación 0-100 y el peso de esa métrica."""
-            valor_sub = sub.get(clave)
+        def _linea(clave: str, etiqueta: str) -> None:
+            """Fila 'texto de la métrica: +X,X/máx' coloreada por calidad.
+
+            El color sale de la sub-puntuación 0-100 de la propia métrica:
+            verde >=70, ámbar >=40, rojo por debajo. Las métricas sin dato se
+            muestran en gris y no penalizan (su peso se redistribuye).
+            """
             peso_max = PESOS_CALIDAD.get(clave, 0)
+            valor_sub = sub.get(clave)
             if not es_valido(valor_sub) or not peso_max:
-                return "Excluido (sin dato)"
-            return f"+{valor_sub / 100 * peso_max:.1f}/{peso_max:.0f}"
+                C.metrica_color(f"{etiqueta}: sin dato", "excluido", C_TEXTO_TENUE)
+                return
+            puntos = valor_sub / 100 * peso_max
+            color = C_VERDE_OSCURO if valor_sub >= 70 else (C_AMBAR if valor_sub >= 40 else C_ROJO)
+            C.metrica_color(etiqueta, f"+{puntos:.1f}/{peso_max:.0f}", color)
 
-        pio = q["piotroski"]
-        C.metrica(f"Piotroski F-Score ({pio['puntos']}/{pio['evaluados']} criterios)", _pts("piotroski"))
+        def _pct(valor, decimales: int = 1) -> str:
+            return f"{valor * 100:.{decimales}f} %" if es_valido(valor) else TEXTO_ND
 
-        if es_valido(L.get("per")) and es_valido(L.get("per_sector")):
-            C.metrica(f"PER {L['per']:.1f}× vs sector {L['per_sector']:.1f}×", _pts("per_vs_sector"))
-        else:
-            C.metrica("PER vs sector", _pts("per_vs_sector"))
+        # --- I. Crecimiento y Eficiencia -------------------------------------
+        bl = q["bloques"]["I. Crecimiento y Eficiencia"]
+        st.markdown(f"**I. Crecimiento y Eficiencia — {bl['obtenidos']:.1f}/{bl['maximo']:.0f}**")
+        _linea(
+            "tendencia_ingresos",
+            f"Crec. ingresos {_pct(L.get('cagr_ingresos'))} × estabilidad "
+            f"×{L.get('estabilidad_ingresos', 1.0):.2f}",
+        )
+        _linea(
+            "tendencia_beneficios",
+            f"Crec. beneficios {_pct(L.get('cagr_beneficios'))} × estabilidad "
+            f"×{L.get('estabilidad_beneficios', 1.0):.2f}",
+        )
+        rot, rot_prev = L.get("rotacion_activos"), L.get("rotacion_activos_prev")
+        _linea(
+            "rotacion_activos",
+            f"Rotación de activos {rot:.2f}× (año anterior {rot_prev:.2f}×)"
+            if es_valido(rot) and es_valido(rot_prev)
+            else "Rotación de activos",
+        )
 
-        if es_valido(L.get("per")) and es_valido(L.get("per_historico_5a")):
-            C.metrica(
-                f"PER {L['per']:.1f}× vs histórico propio 5a (mediana) {L['per_historico_5a']:.1f}×",
-                _pts("per_vs_historico"),
-            )
-        else:
-            C.metrica("PER vs histórico propio (5a, mediana)", _pts("per_vs_historico"))
+        # --- II. Rentabilidad y Calidad --------------------------------------
+        bl = q["bloques"]["II. Rentabilidad y Calidad"]
+        st.markdown(f"**II. Rentabilidad y Calidad — {bl['obtenidos']:.1f}/{bl['maximo']:.0f}**")
+        _linea("roic", f"ROIC {_pct(L.get('roic'))} (ref. coste de capital ~9 %)")
+        _linea(
+            "calidad_beneficio",
+            f"Calidad del beneficio FCF/BN {L['fcf_sobre_beneficio']:.2f}×"
+            if es_valido(L.get("fcf_sobre_beneficio"))
+            else "Calidad del beneficio (FCF/BN)",
+        )
+        _linea(
+            "margen_neto",
+            f"Margen neto {_pct(L.get('margen_neto'))}"
+            + (f" (ref. sector >{ref_margen * 100:.0f} %)" if es_valido(ref_margen) else ""),
+        )
+        _linea(
+            "margen_bruto",
+            f"Margen bruto {_pct(L.get('margen_bruto'))}"
+            + (f" (ref. sector >{ref_bruto * 100:.0f} %)" if es_valido(ref_bruto) else ""),
+        )
+        _linea("roa", f"ROA {_pct(L.get('roa'))} (escala 0-12 %)")
+        _linea(
+            "roe",
+            f"ROE {_pct(L.get('roe'))}"
+            + (f" (ref. sector >{ref_roe * 100:.0f} %)" if es_valido(ref_roe) else ""),
+        )
 
-        if es_valido(L.get("forward_per")) and es_valido(L.get("per")):
-            C.metrica(f"Forward PER {L['forward_per']:.1f}× vs PER actual {L['per']:.1f}×", _pts("forward_per"))
-        else:
-            C.metrica("Forward PER vs PER actual", _pts("forward_per"))
-
-        if es_valido(L.get("margen_neto")):
-            ref_txt = f" (ref. sector >{ref_margen * 100:.0f} %)" if es_valido(ref_margen) else ""
-            C.metrica(f"Margen neto {L['margen_neto'] * 100:.1f} %{ref_txt}", _pts("margen_neto"))
-        else:
-            C.metrica("Margen neto", _pts("margen_neto"))
-
-        if es_valido(L.get("roe")):
-            ref_txt = f" (ref. sector >{ref_roe * 100:.0f} %)" if es_valido(ref_roe) else ""
-            C.metrica(f"ROE {L['roe'] * 100:.1f} %{ref_txt}", _pts("roe"))
-        else:
-            C.metrica("ROE", _pts("roe"))
-
-        if es_valido(L.get("roic")):
-            C.metrica(f"ROIC {L['roic'] * 100:.1f} % (escala 2 %-20 %)", _pts("roic"))
-        else:
-            C.metrica("ROIC", _pts("roic"))
-
-        if es_valido(L.get("peg")):
-            C.metrica(f"PEG {L['peg']:.2f} (escala 0,8-3,0×, menos es mejor)", _pts("peg"))
-        else:
-            C.metrica("PEG", _pts("peg"))
-
-        if es_valido(L.get("cagr_ingresos")):
-            C.metrica(
-                f"Crec. ingresos {L['cagr_ingresos'] * 100:.1f} % × estabilidad "
-                f"×{L.get('estabilidad_ingresos', 1.0):.2f}",
-                _pts("tendencia_ingresos"),
-            )
-        else:
-            C.metrica("Crec. ingresos × estabilidad", _pts("tendencia_ingresos"))
-
-        if es_valido(L.get("cagr_beneficios")):
-            C.metrica(
-                f"Crec. beneficios {L['cagr_beneficios'] * 100:.1f} % × estabilidad "
-                f"×{L.get('estabilidad_beneficios', 1.0):.2f}",
-                _pts("tendencia_beneficios"),
-            )
-        else:
-            C.metrica("Crec. beneficios × estabilidad", _pts("tendencia_beneficios"))
-
-        if es_valido(L.get("fcf_sobre_beneficio")):
-            C.metrica(f"Calidad beneficio FCF/BN {L['fcf_sobre_beneficio']:.2f}×", _pts("calidad_beneficio"))
-        else:
-            C.metrica("Calidad beneficio (FCF/BN)", _pts("calidad_beneficio"))
-
+        # --- III. Salud Financiera -------------------------------------------
+        bl = q["bloques"]["III. Salud Financiera"]
+        st.markdown(f"**III. Salud Financiera — {bl['obtenidos']:.1f}/{bl['maximo']:.0f}**")
+        nde = L.get("net_debt_ebitda")
+        _linea(
+            "net_debt_ebitda",
+            f"Net Debt/EBITDA {nde:.2f}× (ref. <2×)" if es_valido(nde) else "Net Debt/EBITDA",
+        )
+        dil = L.get("dilucion")
+        _linea(
+            "dilucion",
+            f"Dilución {dil * 100:+.1f} % de acciones vs año anterior"
+            if es_valido(dil)
+            else "Dilución (acciones en circulación)",
+        )
         fcf_solidez = sub.get("fcf_solidez")
         if es_valido(fcf_solidez):
             if fcf_solidez >= 100:
-                etiqueta_fcf = "Solidez del FCF: positivo"
+                txt_fcf = "Free Cash Flow positivo"
             elif fcf_solidez > 0:
-                etiqueta_fcf = "Solidez del FCF: negativo por CAPEX de expansión (CFO positivo)"
+                txt_fcf = "FCF negativo por CAPEX de expansión (CFO positivo)"
             else:
-                etiqueta_fcf = "Solidez del FCF: negativo (operativa débil o sin datos de CFO)"
+                txt_fcf = "FCF negativo (operativa débil)"
         else:
-            etiqueta_fcf = "Solidez del FCF"
-        C.metrica(etiqueta_fcf, _pts("fcf_solidez"))
+            txt_fcf = "Free Cash Flow"
+        _linea("fcf_solidez", txt_fcf)
+        ci = L.get("cobertura_intereses")
+        _linea(
+            "cobertura_intereses",
+            f"Cobertura de intereses (EBIT/Gasto) {ci:.1f}× (ref. >6×)"
+            if es_valido(ci)
+            else "Cobertura de intereses (EBIT/Gasto intereses)",
+        )
+        cr = L.get("current_ratio")
+        _linea(
+            "current_ratio",
+            f"Current Ratio {cr:.2f}× (ref. >1,5×)" if es_valido(cr) else "Current Ratio",
+        )
+        de = L.get("debt_equity")
+        _linea(
+            "debt_equity",
+            f"Debt/Equity {de:.0f} % (ref. <50 %)" if es_valido(de) else "Debt/Equity",
+        )
+        ap, ap_prev = L.get("apalancamiento"), L.get("apalancamiento_prev")
+        _linea(
+            "apalancamiento",
+            f"Apalancamiento (deuda LP/activos) {_pct(ap)} vs {_pct(ap_prev)} el año anterior"
+            if es_valido(ap) and es_valido(ap_prev)
+            else "Apalancamiento decreciente",
+        )
+        cr_prev = L.get("current_ratio_prev")
+        _linea(
+            "liquidez_creciente",
+            f"Liquidez corriente {cr:.2f}× vs {cr_prev:.2f}× el año anterior"
+            if es_valido(cr) and es_valido(cr_prev)
+            else "Liquidez corriente creciente",
+        )
 
-        if es_valido(L.get("cobertura_intereses")):
-            C.metrica(f"Cobertura intereses {L['cobertura_intereses']:.1f}× (EBIT/Gasto intereses)", _pts("cobertura_intereses"))
-        else:
-            C.metrica("Cobertura de intereses (EBIT/Gasto intereses)", _pts("cobertura_intereses"))
+        # --- IV. Valoración Relativa -----------------------------------------
+        bl = q["bloques"]["IV. Valoración Relativa"]
+        st.markdown(f"**IV. Valoración Relativa — {bl['obtenidos']:.1f}/{bl['maximo']:.0f}**")
+        peg = L.get("peg")
+        _linea("peg", f"PEG {peg:.2f} (ref. <1,0)" if es_valido(peg) else "PEG")
+        fwd, per = L.get("forward_per"), L.get("per")
+        _linea(
+            "forward_per",
+            f"PER Forward {fwd:.1f}× vs PER actual {per:.1f}×"
+            if es_valido(fwd) and es_valido(per)
+            else "PER Forward vs PER actual",
+        )
+        per_hist = L.get("per_historico_5a")
+        _linea(
+            "per_vs_historico",
+            f"PER {per:.1f}× vs propio 5a (mediana) {per_hist:.1f}×"
+            if es_valido(per) and es_valido(per_hist)
+            else "PER vs histórico propio (5a)",
+        )
+        per_sector = L.get("per_sector")
+        _linea(
+            "per_vs_sector",
+            f"PER {per:.1f}× vs sector {per_sector:.1f}×"
+            if es_valido(per) and es_valido(per_sector)
+            else "PER vs sector",
+        )
 
+        C.metrica("Cobertura del modelo", fmt_pct(q.get("cobertura", 0) * 100, 0))
         if q["excluidos"]:
             st.caption("Excluidos por falta de dato: " + ", ".join(q["excluidos"]))
 
