@@ -1,4 +1,4 @@
-"""Bloque 4: valor objetivo justo, Piotroski F-Score y puntuación de calidad.
+"""Bloque 4: valor objetivo justo y puntuación de calidad fundamental.
 
 Cada método de valoración devuelve `(valor, detalle)` donde `valor` puede ser
 None. El combinador `calcular_fair_value` redistribuye los pesos de los métodos
@@ -13,6 +13,7 @@ import pandas as pd
 
 from config.settings import (
     BANDAS_VALORACION,
+    BLOQUES_CALIDAD,
     CONSENSO_MIN_ANALISTAS,
     DCF_ANIOS,
     DCF_CRECIMIENTO_MAX,
@@ -22,6 +23,7 @@ from config.settings import (
     DCF_G_TERMINAL,
     DCF_WACC_DEFECTO,
     EV_EBITDA_MEDIANO_SECTOR,
+    MARGEN_BRUTO_MEDIANO_SECTOR,
     MARGEN_NETO_MEDIANO_SECTOR,
     PER_MEDIANO_SECTOR,
     PESOS_CALIDAD,
@@ -355,108 +357,22 @@ def clasificar_valoracion(upside_pct: float | None) -> dict:
     return {"etiqueta": "Valoración no calculable", "color": "#94a3b8", "upside": u}
 
 
-# ------------------------------------------------------ Piotroski F-Score ---
-def piotroski_f_score(paquete: dict) -> dict:
-    """9 criterios de Piotroski. Los no evaluables no suman ni restan."""
-    estados = paquete.get("estados", {})
-    resultados, balance, flujo = (
-        estados.get("resultados"),
-        estados.get("balance"),
-        estados.get("flujo_caja"),
-    )
-
-    beneficio = fila(resultados, "Net Income", "Net Income Common Stockholders")
-    activos = fila(balance, "Total Assets")
-    ocf = fila(flujo, "Operating Cash Flow", "Total Cash From Operating Activities")
-    deuda_lp = fila(balance, "Long Term Debt", "Long Term Debt And Capital Lease Obligation")
-    circulante = fila(balance, "Current Assets", "Total Current Assets")
-    pasivo_circ = fila(balance, "Current Liabilities", "Total Current Liabilities")
-    acciones = fila(balance, "Ordinary Shares Number", "Share Issued")
-    ingresos = fila(resultados, "Total Revenue", "Operating Revenue")
-    bruto = fila(resultados, "Gross Profit")
-
-    def roa(i: int) -> float | None:
-        b, a = valor_anio(beneficio, i), valor_anio(activos, i)
-        return b / a if es_valido(b) and es_valido(a) and a else None
-
-    criterios: dict[str, bool | None] = {}
-
-    criterios["ROA positivo"] = (lambda x: x > 0 if es_valido(x) else None)(roa(0))
-    ocf0, act0 = valor_anio(ocf, 0), valor_anio(activos, 0)
-    criterios["Flujo de caja operativo positivo"] = ocf0 > 0 if es_valido(ocf0) else None
-    r0, r1 = roa(0), roa(1)
-    criterios["ROA creciente"] = r0 > r1 if es_valido(r0) and es_valido(r1) else None
-    criterios["Calidad del beneficio (FCO > Beneficio neto)"] = (
-        ocf0 > valor_anio(beneficio, 0)
-        if es_valido(ocf0) and es_valido(valor_anio(beneficio, 0))
-        else None
-    )
-
-    dl0, dl1 = valor_anio(deuda_lp, 0), valor_anio(deuda_lp, 1)
-    a0, a1 = valor_anio(activos, 0), valor_anio(activos, 1)
-    if all(es_valido(x) for x in (dl0, dl1, a0, a1)) and a0 and a1:
-        criterios["Apalancamiento decreciente"] = (dl0 / a0) <= (dl1 / a1)
-    else:
-        criterios["Apalancamiento decreciente"] = None
-
-    c0, p0, c1, p1 = (
-        valor_anio(circulante, 0),
-        valor_anio(pasivo_circ, 0),
-        valor_anio(circulante, 1),
-        valor_anio(pasivo_circ, 1),
-    )
-    if all(es_valido(x) for x in (c0, p0, c1, p1)) and p0 and p1:
-        criterios["Liquidez corriente creciente"] = (c0 / p0) > (c1 / p1)
-    else:
-        criterios["Liquidez corriente creciente"] = None
-
-    ac0, ac1 = valor_anio(acciones, 0), valor_anio(acciones, 1)
-    criterios["Sin dilución de accionistas"] = (
-        ac0 <= ac1 * 1.01 if es_valido(ac0) and es_valido(ac1) else None
-    )
-
-    b0, i0, b1, i1 = (
-        valor_anio(bruto, 0),
-        valor_anio(ingresos, 0),
-        valor_anio(bruto, 1),
-        valor_anio(ingresos, 1),
-    )
-    if all(es_valido(x) for x in (b0, i0, b1, i1)) and i0 and i1:
-        criterios["Margen bruto creciente"] = (b0 / i0) > (b1 / i1)
-    else:
-        criterios["Margen bruto creciente"] = None
-
-    if all(es_valido(x) for x in (i0, a0, i1, a1)) and a0 and a1:
-        criterios["Rotación de activos creciente"] = (i0 / a0) > (i1 / a1)
-    else:
-        criterios["Rotación de activos creciente"] = None
-
-    evaluados = {k: v for k, v in criterios.items() if v is not None}
-    puntos = sum(1 for v in evaluados.values() if v)
-    return {
-        "criterios": criterios,
-        "puntos": puntos,
-        "evaluados": len(evaluados),
-        "normalizado": (puntos / len(evaluados) * 9) if evaluados else None,
-    }
-
-
 # --------------------------------------------- puntuación de calidad 0-100 --
 def puntuar_calidad(paquete: dict, fair_value: dict) -> dict:
-    """Algoritmo determinista de salud fundamental (0-100)."""
+    """Salud fundamental (0-100) en 4 bloques analíticos del 25% cada uno.
+
+    Los 9 criterios binarios del antiguo Piotroski F-Score están disueltos
+    aquí en métricas individuales con peso propio (rotación de activos,
+    margen bruto, ROA, apalancamiento, liquidez corriente, dilución), de
+    modo que se ve qué falla exactamente y cuánto cuesta, en vez de quedar
+    agregado en un único número opaco.
+    """
     info = paquete.get("info", {})
     sector = paquete.get("sector")
     estados = paquete.get("estados", {})
 
-    piotroski = piotroski_f_score(paquete)
     sub: dict[str, float | None] = {}
     lecturas: dict[str, float | None] = {}
-
-    # 1. Piotroski normalizado a 0-100
-    sub["piotroski"] = (
-        piotroski["normalizado"] / 9 * 100 if es_valido(piotroski["normalizado"]) else None
-    )
-    lecturas["piotroski"] = piotroski["puntos"]
 
     # 2-3. PER frente a sector e histórico (menos es mejor)
     per = primero_valido(info.get("trailingPE"))
@@ -574,14 +490,114 @@ def puntuar_calidad(paquete: dict, fair_value: dict) -> dict:
     if es_valido(cobertura_intereses):
         sub["cobertura_intereses"] = escalar(cobertura_intereses, 1.5, 6.0)
 
+    # --- Métricas antes agregadas dentro del Piotroski F-Score --------------
+    # Mismas fuentes de datos que usaba aquel (ya probadas en producción),
+    # pero ahora cada una con peso propio y lectura visible.
+    balance = estados.get("balance")
+    flujo = estados.get("flujo_caja")
+    activos = fila(balance, "Total Assets")
+    bruto = fila(estados.get("resultados"), "Gross Profit")
+    deuda_lp = fila(balance, "Long Term Debt", "Long Term Debt And Capital Lease Obligation")
+    circulante = fila(balance, "Current Assets", "Total Current Assets")
+    pasivo_circ = fila(balance, "Current Liabilities", "Total Current Liabilities")
+    acciones_serie = fila(balance, "Ordinary Shares Number", "Share Issued")
+
+    i0, i1 = valor_anio(ingresos, 0), valor_anio(ingresos, 1)
+    a0, a1 = valor_anio(activos, 0), valor_anio(activos, 1)
+    b0, b1 = valor_anio(beneficio, 0), valor_anio(beneficio, 1)
+
+    # Rotación de activos: ingresos por unidad de activo, vs. año anterior
+    if all(es_valido(x) for x in (i0, a0, i1, a1)) and a0 and a1:
+        rot0, rot1 = i0 / a0, i1 / a1
+        lecturas["rotacion_activos"] = rot0
+        lecturas["rotacion_activos_prev"] = rot1
+        # Escala continua sobre la variación relativa: -10% -> 0, +10% -> 100
+        sub["rotacion_activos"] = escalar(rot0 / rot1 - 1 if rot1 else 0.0, -0.10, 0.10)
+
+    # Margen bruto vs. mediana del sector (nivel, no solo tendencia)
+    bruto0 = valor_anio(bruto, 0)
+    if es_valido(bruto0) and es_valido(i0) and i0:
+        margen_bruto = bruto0 / i0
+        lecturas["margen_bruto"] = margen_bruto
+        ref_bruto = MARGEN_BRUTO_MEDIANO_SECTOR.get(sector)
+        sub["margen_bruto"] = (
+            escalar(margen_bruto / ref_bruto, 0.5, 1.5)
+            if es_valido(ref_bruto) and ref_bruto
+            else escalar(margen_bruto, 0.15, 0.65)
+        )
+
+    # ROA: nivel actual (fusiona los antiguos "ROA positivo" y "ROA creciente")
+    if es_valido(b0) and es_valido(a0) and a0:
+        roa = b0 / a0
+        lecturas["roa"] = roa
+        sub["roa"] = escalar(roa, 0.0, 0.12)
+
+    # Apalancamiento: deuda a largo plazo sobre activos, vs. año anterior
+    dl0, dl1 = valor_anio(deuda_lp, 0), valor_anio(deuda_lp, 1)
+    if all(es_valido(x) for x in (dl0, dl1, a0, a1)) and a0 and a1:
+        apal0, apal1 = dl0 / a0, dl1 / a1
+        lecturas["apalancamiento"] = apal0
+        lecturas["apalancamiento_prev"] = apal1
+        # Menos apalancamiento que el año pasado puntúa mejor (escala invertida)
+        sub["apalancamiento"] = escalar(apal0 - apal1, 0.05, -0.05)
+
+    # Liquidez corriente creciente (activo circulante / pasivo circulante)
+    c0, p0 = valor_anio(circulante, 0), valor_anio(pasivo_circ, 0)
+    c1, p1 = valor_anio(circulante, 1), valor_anio(pasivo_circ, 1)
+    if all(es_valido(x) for x in (c0, p0, c1, p1)) and p0 and p1:
+        cr0, cr1 = c0 / p0, c1 / p1
+        lecturas["current_ratio"] = cr0
+        lecturas["current_ratio_prev"] = cr1
+        sub["current_ratio"] = escalar(cr0, 0.8, 2.0)
+        sub["liquidez_creciente"] = escalar(cr0 - cr1, -0.3, 0.3)
+    elif es_valido(c0) and es_valido(p0) and p0:
+        lecturas["current_ratio"] = c0 / p0
+        sub["current_ratio"] = escalar(c0 / p0, 0.8, 2.0)
+
+    # Dilución: variación de acciones en circulación vs. año anterior.
+    # Emitir papel nuevo diluye al accionista aunque el negocio crezca.
+    ac0, ac1 = valor_anio(acciones_serie, 0), valor_anio(acciones_serie, 1)
+    if es_valido(ac0) and es_valido(ac1) and ac1:
+        dilucion = (ac0 - ac1) / ac1
+        lecturas["dilucion"] = dilucion
+        # +8% de dilución -> 0 pts; recompra del 2% -> 100 pts
+        sub["dilucion"] = escalar(dilucion, 0.08, -0.02)
+
+    # Debt/Equity y Net Debt/EBITDA (solvencia estructural)
+    deuda_total = primero_valido(info.get("totalDebt"))
+    caja_total = primero_valido(info.get("totalCash"))
+    ebitda = primero_valido(info.get("ebitda"))
+    debt_equity = primero_valido(info.get("debtToEquity"))
+    if es_valido(debt_equity):
+        lecturas["debt_equity"] = debt_equity  # yfinance lo da en %
+        sub["debt_equity"] = escalar(debt_equity, 150.0, 20.0)
+    if es_valido(deuda_total) and es_valido(ebitda) and ebitda > 0:
+        net_debt_ebitda = (deuda_total - (caja_total or 0.0)) / ebitda
+        lecturas["net_debt_ebitda"] = net_debt_ebitda
+        sub["net_debt_ebitda"] = escalar(net_debt_ebitda, 4.0, 0.5)
+
     resultado = ponderar(sub, PESOS_CALIDAD)
+
+    # Puntos obtenidos y disponibles por bloque analítico (para la interfaz).
+    bloques = {}
+    for nombre_bloque, metricas in BLOQUES_CALIDAD.items():
+        obtenidos = sum(
+            sub[m] / 100 * peso for m, peso in metricas.items() if es_valido(sub.get(m))
+        )
+        disponibles = sum(peso for m, peso in metricas.items() if es_valido(sub.get(m)))
+        bloques[nombre_bloque] = {
+            "obtenidos": obtenidos,
+            "disponibles": disponibles,
+            "maximo": sum(metricas.values()),
+        }
+
     return {
         "puntuacion": round(resultado["valor"], 1) if es_valido(resultado["valor"]) else None,
         "subpuntuaciones": sub,
         "lecturas": lecturas,
         "excluidos": resultado["excluidos"],
         "cobertura": resultado["cobertura"],
-        "piotroski": piotroski,
+        "bloques": bloques,
     }
 
 
