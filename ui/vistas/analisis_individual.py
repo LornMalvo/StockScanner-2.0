@@ -21,6 +21,7 @@ from config.settings import (
     PB_MEDIANO_SECTOR,
     PEG_MEDIANO_SECTOR,
     PER_MEDIANO_SECTOR,
+    PESOS_CALIDAD,
     PS_MEDIANO_SECTOR,
     ROA_MEDIANO_SECTOR,
     ROE_MEDIANO_SECTOR,
@@ -445,9 +446,16 @@ def _bloque_4_calidad(a: dict) -> None:
             valor = comp["valor"]
             peso = v["pesos_aplicados"].get(_clave_peso(nombre))
             sufijo = f"  ·  peso {peso * 100:.0f} %" if peso else "  ·  excluido del cálculo"
-            C.metrica(nombre, _precio_fmt(valor, p) + sufijo, ayuda=_EXPLICACION_METODO_FV.get(nombre))
+            C.metrica(nombre, _precio_fmt(valor, p) + sufijo)
             for n in comp["detalle"].get("notas", []):
                 st.caption(f"↳ {n}")
+            formula = comp["detalle"].get("formula")
+            if formula:
+                ver_calculo = st.toggle(
+                    "Ver cálculo", key=f"toggle_formula_{_clave_peso(nombre)}_{p['ticker']}"
+                )
+                if ver_calculo:
+                    st.caption(formula)
         C.metrica("Cobertura del modelo", fmt_pct(v.get("cobertura", 0) * 100, 0))
 
     with st.expander("Piotroski F-Score"):
@@ -457,48 +465,104 @@ def _bloque_4_calidad(a: dict) -> None:
             simbolo = "✔  (+1)" if cumple else ("✘  (+0)" if cumple is False else TEXTO_ND)
             C.metrica(criterio, simbolo)
 
-    with st.expander("Desglose de la puntuación de calidad"):
-        sub = q["subpuntuaciones"]
-        pesos_aplic = q.get("pesos_aplicados", {})
-        for clave, etiqueta in _ETIQUETAS_CALIDAD.items():
-            valor_sub = sub.get(clave)
-            peso_norm = pesos_aplic.get(clave)
-            if es_valido(valor_sub) and peso_norm:
-                contribucion = valor_sub * peso_norm
-                C.metrica(
-                    etiqueta,
-                    f"{valor_sub:.0f}/100  ·  peso {peso_norm * 100:.0f} %  ·  aporta {contribucion:.1f} pts",
-                    ayuda=_EXPLICACION_CALIDAD.get(clave),
-                )
-            else:
-                C.metrica(etiqueta, "Excluido (sin dato)", ayuda=_EXPLICACION_CALIDAD.get(clave))
-        C.metrica("Cobertura del modelo", fmt_pct(q.get("cobertura", 0) * 100, 0))
-
     with st.expander("Métricas de calidad"):
         L = q["lecturas"]
-        C.metrica("PER actual", fmt_num(L.get("per")))
-        C.metrica("PER mediano del sector", fmt_num(L.get("per_sector")))
-        C.metrica("PER mediano 5 años (propio)", fmt_num(L.get("per_historico_5a")))
-        C.metrica("Forward PER", fmt_num(L.get("forward_per")))
-        C.metrica("Margen neto", fmt_pct(L.get("margen_neto"), 1, ya_en_pct=False))
-        C.metrica("ROE", fmt_pct(L.get("roe"), 1, ya_en_pct=False))
-        C.metrica("ROIC", fmt_pct(L.get("roic"), 1, ya_en_pct=False))
-        C.metrica("PEG", fmt_num(L.get("peg")))
-        C.metrica("CAGR ingresos", fmt_pct(L.get("cagr_ingresos"), 1, ya_en_pct=False))
-        C.metrica("Estabilidad crecimiento ingresos", f"×{fmt_num(L.get('estabilidad_ingresos'), 2)}")
-        C.metrica("CAGR beneficios", fmt_pct(L.get("cagr_beneficios"), 1, ya_en_pct=False))
-        C.metrica("Estabilidad crecimiento beneficios", f"×{fmt_num(L.get('estabilidad_beneficios'), 2)}")
-        C.metrica("Calidad del beneficio (FCF/BN)", fmt_num(L.get("fcf_sobre_beneficio")))
-        fcf_solidez = q["subpuntuaciones"].get("fcf_solidez")
+        sub = q["subpuntuaciones"]
+        sector = p.get("sector")
+        ref_margen = MARGEN_NETO_MEDIANO_SECTOR.get(sector)
+        ref_roe = ROE_MEDIANO_SECTOR.get(sector)
+
+        def _pts(clave: str) -> str:
+            """'+X,X/máx' según la sub-puntuación 0-100 y el peso de esa métrica."""
+            valor_sub = sub.get(clave)
+            peso_max = PESOS_CALIDAD.get(clave, 0)
+            if not es_valido(valor_sub) or not peso_max:
+                return "Excluido (sin dato)"
+            return f"+{valor_sub / 100 * peso_max:.1f}/{peso_max:.0f}"
+
+        pio = q["piotroski"]
+        C.metrica(f"Piotroski F-Score ({pio['puntos']}/{pio['evaluados']} criterios)", _pts("piotroski"))
+
+        if es_valido(L.get("per")) and es_valido(L.get("per_sector")):
+            C.metrica(f"PER {L['per']:.1f}× vs sector {L['per_sector']:.1f}×", _pts("per_vs_sector"))
+        else:
+            C.metrica("PER vs sector", _pts("per_vs_sector"))
+
+        if es_valido(L.get("per")) and es_valido(L.get("per_historico_5a")):
+            C.metrica(
+                f"PER {L['per']:.1f}× vs histórico propio 5a (mediana) {L['per_historico_5a']:.1f}×",
+                _pts("per_vs_historico"),
+            )
+        else:
+            C.metrica("PER vs histórico propio (5a, mediana)", _pts("per_vs_historico"))
+
+        if es_valido(L.get("forward_per")) and es_valido(L.get("per")):
+            C.metrica(f"Forward PER {L['forward_per']:.1f}× vs PER actual {L['per']:.1f}×", _pts("forward_per"))
+        else:
+            C.metrica("Forward PER vs PER actual", _pts("forward_per"))
+
+        if es_valido(L.get("margen_neto")):
+            ref_txt = f" (ref. sector >{ref_margen * 100:.0f} %)" if es_valido(ref_margen) else ""
+            C.metrica(f"Margen neto {L['margen_neto'] * 100:.1f} %{ref_txt}", _pts("margen_neto"))
+        else:
+            C.metrica("Margen neto", _pts("margen_neto"))
+
+        if es_valido(L.get("roe")):
+            ref_txt = f" (ref. sector >{ref_roe * 100:.0f} %)" if es_valido(ref_roe) else ""
+            C.metrica(f"ROE {L['roe'] * 100:.1f} %{ref_txt}", _pts("roe"))
+        else:
+            C.metrica("ROE", _pts("roe"))
+
+        if es_valido(L.get("roic")):
+            C.metrica(f"ROIC {L['roic'] * 100:.1f} % (escala 2 %-20 %)", _pts("roic"))
+        else:
+            C.metrica("ROIC", _pts("roic"))
+
+        if es_valido(L.get("peg")):
+            C.metrica(f"PEG {L['peg']:.2f} (escala 0,8-3,0×, menos es mejor)", _pts("peg"))
+        else:
+            C.metrica("PEG", _pts("peg"))
+
+        if es_valido(L.get("cagr_ingresos")):
+            C.metrica(
+                f"Crec. ingresos {L['cagr_ingresos'] * 100:.1f} % × estabilidad "
+                f"×{L.get('estabilidad_ingresos', 1.0):.2f}",
+                _pts("tendencia_ingresos"),
+            )
+        else:
+            C.metrica("Crec. ingresos × estabilidad", _pts("tendencia_ingresos"))
+
+        if es_valido(L.get("cagr_beneficios")):
+            C.metrica(
+                f"Crec. beneficios {L['cagr_beneficios'] * 100:.1f} % × estabilidad "
+                f"×{L.get('estabilidad_beneficios', 1.0):.2f}",
+                _pts("tendencia_beneficios"),
+            )
+        else:
+            C.metrica("Crec. beneficios × estabilidad", _pts("tendencia_beneficios"))
+
+        if es_valido(L.get("fcf_sobre_beneficio")):
+            C.metrica(f"Calidad beneficio FCF/BN {L['fcf_sobre_beneficio']:.2f}×", _pts("calidad_beneficio"))
+        else:
+            C.metrica("Calidad beneficio (FCF/BN)", _pts("calidad_beneficio"))
+
+        fcf_solidez = sub.get("fcf_solidez")
         if es_valido(fcf_solidez):
             if fcf_solidez >= 100:
-                etiqueta_fcf = "Positivo"
+                etiqueta_fcf = "Solidez del FCF: positivo"
             elif fcf_solidez > 0:
-                etiqueta_fcf = "Negativo por CAPEX de expansión (CFO positivo)"
+                etiqueta_fcf = "Solidez del FCF: negativo por CAPEX de expansión (CFO positivo)"
             else:
-                etiqueta_fcf = "Negativo (operativa débil o sin datos de CFO)"
-            C.metrica("Solidez del FCF", etiqueta_fcf)
-        C.metrica("Cobertura de intereses (EBIT/Gasto intereses)", fmt_num(L.get("cobertura_intereses")))
+                etiqueta_fcf = "Solidez del FCF: negativo (operativa débil o sin datos de CFO)"
+        else:
+            etiqueta_fcf = "Solidez del FCF"
+        C.metrica(etiqueta_fcf, _pts("fcf_solidez"))
+
+        if es_valido(L.get("cobertura_intereses")):
+            C.metrica(f"Cobertura intereses {L['cobertura_intereses']:.1f}× (EBIT/Gasto intereses)", _pts("cobertura_intereses"))
+        else:
+            C.metrica("Cobertura de intereses (EBIT/Gasto intereses)", _pts("cobertura_intereses"))
+
         if q["excluidos"]:
             st.caption("Excluidos por falta de dato: " + ", ".join(q["excluidos"]))
 
@@ -510,67 +574,6 @@ def _clave_peso(nombre: str) -> str:
         "EV/EBITDA sectorial": "ev_ebitda",
         "Consenso analistas": "consenso",
     }.get(nombre, nombre.lower())
-
-
-# Texto explicativo por método de valoración -- se muestra como tooltip
-# (atributo `title`, ver `C.metrica`) para que quede claro con qué datos se
-# calcula cada número sin saturar la pantalla con texto fijo.
-_EXPLICACION_METODO_FV = {
-    "DCF": (
-        "Descuento de Flujos de Caja: proyecta el FCF actual a 5 años con "
-        "crecimiento decreciente hasta un terminal del 2,5%, más valor "
-        "terminal, descontado al WACC (CAPM simplificado por beta). Usa "
-        "FCF más reciente, caja y deuda totales, y acciones en circulación."
-    ),
-    "Múltiplos": (
-        "Media entre el PER mediano del sector y el PER mediano al que ha "
-        "cotizado la propia empresa en los últimos 5 años, aplicado al BPA "
-        "(Forward si está disponible, si no TTM)."
-    ),
-    "EV/EBITDA sectorial": (
-        "Equity Value = EBITDA actual × múltiplo EV/EBITDA mediano del "
-        "sector − deuda neta; el resultado se divide entre las acciones en "
-        "circulación."
-    ),
-    "Consenso analistas": (
-        "Precio objetivo medio de los analistas que cubren el valor "
-        "(Finnhub/Yahoo). Pesa el doble en la media si lo cubren 10 o más "
-        "analistas."
-    ),
-}
-
-# Etiqueta legible + explicación por sub-métrica de calidad, en el mismo
-# orden en que se calculan dentro de `puntuar_calidad`.
-_ETIQUETAS_CALIDAD = {
-    "piotroski": "Piotroski F-Score",
-    "per_vs_sector": "PER vs sector",
-    "per_vs_historico": "PER vs histórico propio (5a, mediana)",
-    "forward_per": "Forward PER vs PER actual",
-    "margen_neto": "Margen neto vs sector",
-    "roe": "ROE vs sector",
-    "roic": "ROIC",
-    "peg": "PEG",
-    "tendencia_ingresos": "Tendencia ingresos (CAGR × estabilidad)",
-    "tendencia_beneficios": "Tendencia beneficios (CAGR × estabilidad)",
-    "calidad_beneficio": "Calidad del beneficio (FCF/BN)",
-    "fcf_solidez": "Solidez del FCF",
-    "cobertura_intereses": "Cobertura de intereses (EBIT/Gastos)",
-}
-_EXPLICACION_CALIDAD = {
-    "piotroski": "9 criterios binarios (rentabilidad, apalancamiento, eficiencia) sobre datos anuales; normalizado a 0-100.",
-    "per_vs_sector": "PER actual frente al PER mediano del sector: cuanto más barato relativo, más puntúa.",
-    "per_vs_historico": "PER actual frente al PER mediano al que ha cotizado la propia empresa en 5 años.",
-    "forward_per": "Compara el PER Forward con el PER actual: si baja, el mercado espera mejora de beneficios.",
-    "margen_neto": "Margen neto actual frente a la mediana del sector.",
-    "roe": "ROE actual frente a la mediana del sector.",
-    "roic": "Beneficio operativo después de impuestos sobre el capital invertido (deuda + fondos propios).",
-    "peg": "PER entre la tasa de crecimiento de beneficios: por debajo de 1 se considera barato para lo que crece.",
-    "tendencia_ingresos": "CAGR de ingresos multiplicado por un factor de estabilidad trimestral (0,55×-1,0×).",
-    "tendencia_beneficios": "CAGR de beneficio neto multiplicado por un factor de estabilidad trimestral (0,55×-1,0×).",
-    "calidad_beneficio": "FCF dividido entre el beneficio neto: cuánto del beneficio contable se convierte en caja real.",
-    "fcf_solidez": "100 si FCF>0; 50 si FCF<0 pero el flujo de caja operativo sigue siendo positivo (expansión); 0 si ambos son negativos.",
-    "cobertura_intereses": "EBIT dividido entre el gasto en intereses: capacidad de pagar la deuda con el beneficio operativo actual.",
-}
 
 
 # ============================================================== Bloque 5 ======
