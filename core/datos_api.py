@@ -151,6 +151,14 @@ def obtener_info(ticker: str) -> dict:
     """Fundamentales de yfinance, con reintentos y diagnóstico real.
 
     Se intenta primero `get_info()` y, si llega vacío, la propiedad `.info`.
+    Si ambas fallan *sin lanzar excepción* (respuesta 200 pero sin campos de
+    identidad), es la firma típica de un crumb/cookie de Yahoo caducado en la
+    sesión compartida (`_sesion_yfinance`, cacheada con `st.cache_resource` y
+    reutilizada entre tickers y usuarios). Ese caso no lo cubre `_pedir()`
+    (que solo reintenta ante excepciones de rate-limit), así que aquí se
+    purga la sesión y el `Ticker` cacheados y se reintenta una vez completa
+    con credenciales frescas antes de rendirse.
+
     Si ambas fallan se devuelve `_ss_error` con el motivo concreto, que la
     interfaz muestra en lugar de un mudo "dato no disponible".
     """
@@ -160,21 +168,31 @@ def obtener_info(ticker: str) -> dict:
         return cacheado
 
     errores: list[str] = []
-    t = _ticker(ticker)
-    for nombre_metodo, obtener in (("get_info()", t.get_info), ("propiedad .info", lambda: t.info)):
-        valor, error = _pedir(obtener)
-        if error is not None:
-            errores.append(f"{nombre_metodo}: {type(error).__name__}: {error}")
-            continue
-        if valor and (
-            valor.get("longName") or valor.get("shortName") or valor.get("regularMarketPrice")
-        ):
-            _cache_guardar(clave, valor)
-            return valor
-        errores.append(
-            f"{nombre_metodo}: respuesta sin campos de identidad"
-            + (f" ({len(valor)} claves)" if valor else " (vacía)")
-        )
+    for intento_sesion in range(2):
+        t = _ticker(ticker)
+        vacio_sin_excepcion = False
+        for nombre_metodo, obtener in (("get_info()", t.get_info), ("propiedad .info", lambda: t.info)):
+            valor, error = _pedir(obtener)
+            if error is not None:
+                errores.append(f"{nombre_metodo}: {type(error).__name__}: {error}")
+                continue
+            if valor and (
+                valor.get("longName") or valor.get("shortName") or valor.get("regularMarketPrice")
+            ):
+                _cache_guardar(clave, valor)
+                return valor
+            vacio_sin_excepcion = True
+            errores.append(
+                f"{nombre_metodo}: respuesta sin campos de identidad"
+                + (f" ({len(valor)} claves)" if valor else " (vacía)")
+            )
+
+        if intento_sesion == 0 and vacio_sin_excepcion:
+            _sesion_yfinance.clear()
+            _ticker.clear()
+            errores.append("Sesión de Yahoo purgada por respuesta vacía; reintentando con sesión nueva")
+        else:
+            break
 
     fallo = {"_ss_error": errores}
     _cache_guardar(clave, fallo)
