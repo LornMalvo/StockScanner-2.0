@@ -7,19 +7,21 @@ que no han podido calcularse: jamás se introduce un 0 en la media.
 
 from __future__ import annotations
 
+import statistics
+
 import pandas as pd
 
 from config.settings import (
     BANDAS_VALORACION,
     CONSENSO_MIN_ANALISTAS,
-    CONSENSO_UNANIMIDAD,
     DCF_ANIOS,
     DCF_CRECIMIENTO_MAX,
+    DCF_CRECIMIENTO_MAX_ABSOLUTO,
+    DCF_CRECIMIENTO_MAX_SECTOR,
     DCF_CRECIMIENTO_MIN,
     DCF_G_TERMINAL,
     DCF_WACC_DEFECTO,
-    DDM_G_MAX,
-    DDM_RETORNO_EXIGIDO,
+    EV_EBITDA_MEDIANO_SECTOR,
     MARGEN_NETO_MEDIANO_SECTOR,
     PER_MEDIANO_SECTOR,
     PESOS_CALIDAD,
@@ -86,7 +88,26 @@ def valorar_dcf(paquete: dict) -> tuple[float | None, dict]:
         detalle["notas"].append("Crecimiento no estimable; se usa el terminal")
         crecimiento = DCF_G_TERMINAL
 
-    crecimiento = max(DCF_CRECIMIENTO_MIN, min(DCF_CRECIMIENTO_MAX, float(crecimiento)))
+    # Techo de crecimiento diferenciado por sector (en vez de un techo único
+    # global): sectores de crecimiento estructural alto sostienen tasas más
+    # altas sin que sea síntoma de exceso de optimismo. Si además hay
+    # cobertura amplia de analistas (>= CONSENSO_MIN_ANALISTAS), se relaja
+    # un 25% adicional sobre el techo del sector, con un tope absoluto de
+    # seguridad: un consenso amplio corrobora de forma independiente que ese
+    # crecimiento es sostenible, no un caso aislado o una lectura puntual
+    # del dato de yfinance.
+    techo_sector = DCF_CRECIMIENTO_MAX_SECTOR.get(paquete.get("sector"), DCF_CRECIMIENTO_MAX)
+    n_analistas = paquete.get("consenso", {}).get("n_analistas")
+    if es_valido(n_analistas) and float(n_analistas) >= CONSENSO_MIN_ANALISTAS:
+        techo_crecimiento = min(techo_sector * 1.25, DCF_CRECIMIENTO_MAX_ABSOLUTO)
+        detalle["notas"].append(
+            f"Techo de crecimiento ampliado a {techo_crecimiento * 100:.0f}% "
+            f"por alta cobertura de analistas (\u2265{CONSENSO_MIN_ANALISTAS})"
+        )
+    else:
+        techo_crecimiento = techo_sector
+
+    crecimiento = max(DCF_CRECIMIENTO_MIN, min(techo_crecimiento, float(crecimiento)))
     wacc = DCF_WACC_DEFECTO
     beta = primero_valido(info.get("beta"))
     if es_valido(beta):
@@ -153,32 +174,55 @@ def valorar_multiplos(paquete: dict) -> tuple[float | None, dict]:
     return per_justo * bpa, detalle
 
 
-def valorar_ddm(paquete: dict) -> tuple[float | None, dict]:
-    """Modelo de Gordon. Solo aplica si la empresa reparte dividendo."""
-    detalle = {"metodo": "DDM (Gordon)", "notas": []}
+def valorar_ev_ebitda(paquete: dict) -> tuple[float | None, dict]:
+    """EV/EBITDA sectorial. Sustituye al DDM (retirado: solo aplicaba a
+    empresas con dividendo y quedaba inútil en el resto de casos).
+
+    Equity Value = EBITDA x múltiplo objetivo del sector - Deuda neta;
+    Precio = Equity Value / acciones en circulación. Se separa Enterprise
+    Value de Equity Value explícitamente en vez de escalar el precio
+    linealmente por el ratio de múltiplos (ese atajo asume implícitamente
+    que la deuda neta escala en proporción al equity, lo cual es falso
+    salvo que la empresa no tenga deuda, y sesga el resultado en empresas
+    apalancadas).
+
+    A diferencia del PER, EV/EBITDA no lo distorsiona el apalancamiento ni
+    el tipo impositivo, y aplica igual de bien con o sin reparto de
+    dividendo -- por eso cubre el hueco que dejaba el DDM sin depender de
+    la política de dividendo de la empresa.
+    """
+    detalle = {"metodo": "EV/EBITDA", "notas": []}
     info = paquete.get("info", {})
-    dividendo = primero_valido(info.get("dividendRate"), info.get("trailingAnnualDividendRate"))
-    if not es_valido(dividendo) or dividendo <= 0:
-        detalle["notas"].append("La empresa no reparte dividendo: método no aplicable")
+
+    ebitda = primero_valido(info.get("ebitda"))
+    if not es_valido(ebitda) or ebitda <= 0:
+        detalle["notas"].append("EBITDA no disponible o negativo")
         return None, detalle
 
-    crecimiento = primero_valido(info.get("fiveYearAvgDividendYield") and None, info.get("earningsGrowth"))
-    payout = primero_valido(info.get("payoutRatio"))
-    roe = primero_valido(info.get("returnOnEquity"))
-    if es_valido(payout) and es_valido(roe) and 0 <= payout < 1:
-        crecimiento = primero_valido(crecimiento, roe * (1 - payout))
-    if not es_valido(crecimiento):
-        crecimiento = 0.02
-        detalle["notas"].append("Crecimiento del dividendo estimado por defecto (2%)")
-
-    g = max(0.0, min(DDM_G_MAX, float(crecimiento)))
-    if DDM_RETORNO_EXIGIDO <= g:
-        detalle["notas"].append("Crecimiento >= retorno exigido: Gordon no converge")
+    multiplo_sector = EV_EBITDA_MEDIANO_SECTOR.get(paquete.get("sector"))
+    if not es_valido(multiplo_sector):
+        detalle["notas"].append("Sin múltiplo EV/EBITDA de referencia para el sector")
         return None, detalle
 
-    valor = dividendo * (1 + g) / (DDM_RETORNO_EXIGIDO - g)
-    detalle.update({"dividendo": dividendo, "crecimiento": g, "valor_accion": valor})
-    return valor, detalle
+    acciones = primero_valido(info.get("sharesOutstanding"), info.get("impliedSharesOutstanding"))
+    if not es_valido(acciones) or acciones <= 0:
+        detalle["notas"].append("Número de acciones no disponible")
+        return None, detalle
+
+    deuda_neta = (primero_valido(info.get("totalDebt")) or 0.0) - (primero_valido(info.get("totalCash")) or 0.0)
+    equity_value = ebitda * multiplo_sector - deuda_neta
+    por_accion = equity_value / acciones
+
+    detalle.update(
+        {
+            "ebitda": ebitda,
+            "multiplo_sector": multiplo_sector,
+            "deuda_neta": deuda_neta,
+            "equity_value": equity_value,
+            "valor_accion": por_accion,
+        }
+    )
+    return (por_accion if por_accion > 0 else None), detalle
 
 
 def calcular_per_historico(paquete: dict, anios: int = 5) -> float | None:
@@ -203,37 +247,42 @@ def calcular_per_historico(paquete: dict, anios: int = 5) -> float | None:
         if ventana.empty or not es_valido(bpa) or bpa <= 0:
             continue
         pers.append(float(ventana["Close"].mean()) / (bpa / acciones))
+    # Mediana en vez de media: un solo año con BPA distorsionado (cargos
+    # puntuales, amortización de intangibles por una adquisición, etc.)
+    # infla la media pero apenas mueve la mediana.
     validos = [p for p in pers if 0 < p < 100]
-    return sum(validos) / len(validos) if validos else None
+    return statistics.median(validos) if validos else None
 
 
 def _consenso_ponderable(consenso: dict) -> tuple[float | None, float]:
-    """Devuelve (precio objetivo, multiplicador de peso 1 o 2)."""
+    """Devuelve (precio objetivo, multiplicador de peso 1 o 2).
+
+    Peso doble si lo cubren >= CONSENSO_MIN_ANALISTAS analistas. Ya no se
+    exige además unanimidad del 100%: con cobertura amplia esa condición
+    casi nunca se cumplía (basta un solo "mantener" entre 45 analistas para
+    desactivarla), dejando el peso doble inerte en la práctica incluso en
+    los valores mejor cubiertos.
+    """
     objetivo = consenso.get("precio_objetivo")
     if not es_valido(objetivo):
         return None, 1.0
     n = consenso.get("n_analistas")
-    unanimidad = consenso.get("unanimidad")
-    doble = (
-        es_valido(n)
-        and float(n) >= CONSENSO_MIN_ANALISTAS
-        and es_valido(unanimidad)
-        and float(unanimidad) >= CONSENSO_UNANIMIDAD
-    )
+    doble = es_valido(n) and float(n) >= CONSENSO_MIN_ANALISTAS
     return float(objetivo), (2.0 if doble else 1.0)
 
 
 def calcular_fair_value(paquete: dict) -> dict:
-    """Combina DCF, múltiplos, DDM y consenso en un único valor objetivo."""
+    """Combina DCF, múltiplos, EV/EBITDA sectorial y consenso en un único
+    valor objetivo."""
     dcf, det_dcf = valorar_dcf(paquete)
     mult, det_mult = valorar_multiplos(paquete)
-    ddm, det_ddm = valorar_ddm(paquete)
+    ev_ebitda, det_ev_ebitda = valorar_ev_ebitda(paquete)
     objetivo, multiplicador = _consenso_ponderable(paquete.get("consenso", {}))
 
     pesos = dict(PESOS_FAIR_VALUE)
     pesos["consenso"] = pesos["consenso"] * multiplicador
     resultado = ponderar(
-        {"dcf": dcf, "multiplos": mult, "ddm": ddm, "consenso": objetivo}, pesos
+        {"dcf": dcf, "multiplos": mult, "ev_ebitda": ev_ebitda, "consenso": objetivo}, pesos
     )
 
     precio = paquete.get("precio")
@@ -247,7 +296,7 @@ def calcular_fair_value(paquete: dict) -> dict:
         "componentes": {
             "DCF": {"valor": dcf, "detalle": det_dcf},
             "Múltiplos": {"valor": mult, "detalle": det_mult},
-            "DDM": {"valor": ddm, "detalle": det_ddm},
+            "EV/EBITDA sectorial": {"valor": ev_ebitda, "detalle": det_ev_ebitda},
             "Consenso analistas": {
                 "valor": objetivo,
                 "detalle": {
@@ -429,17 +478,28 @@ def puntuar_calidad(paquete: dict, fair_value: dict) -> dict:
     if es_valido(peg) and peg > 0:
         sub["peg"] = escalar(peg, 3.0, 0.8)
 
-    # 9-10. Tendencia de ingresos y beneficios (CAGR + estabilidad)
+    # 9-10. Tendencia de ingresos y beneficios: CAGR anual ponderado por
+    # estabilidad trimestral. Un CAGR alto pero errático (un solo trimestre
+    # extraordinario, o uno muy malo, distorsionando el conjunto) premia
+    # menos que uno más modesto pero consistente.
     ingresos = fila(estados.get("resultados"), "Total Revenue", "Operating Revenue")
     beneficio = fila(estados.get("resultados"), "Net Income", "Net Income Common Stockholders")
     cagr_ing = _cagr(ingresos)
     cagr_ben = _cagr(beneficio)
     lecturas["cagr_ingresos"] = cagr_ing
     lecturas["cagr_beneficios"] = cagr_ben
+
+    ingresos_trim = fila(estados.get("resultados_trim"), "Total Revenue", "Operating Revenue")
+    beneficio_trim = fila(estados.get("resultados_trim"), "Net Income", "Net Income Common Stockholders")
+    estab_ing = _calc_estabilidad_crecimiento(ingresos_trim)
+    estab_ben = _calc_estabilidad_crecimiento(beneficio_trim)
+    lecturas["estabilidad_ingresos"] = estab_ing
+    lecturas["estabilidad_beneficios"] = estab_ben
+
     if es_valido(cagr_ing):
-        sub["tendencia_ingresos"] = escalar(cagr_ing, -0.10, 0.20)
+        sub["tendencia_ingresos"] = escalar(cagr_ing, -0.10, 0.20) * estab_ing
     if es_valido(cagr_ben):
-        sub["tendencia_beneficios"] = escalar(cagr_ben, -0.15, 0.25)
+        sub["tendencia_beneficios"] = escalar(cagr_ben, -0.15, 0.25) * estab_ben
 
     # 11. Calidad del beneficio: FCF / Beneficio neto
     fcf = primero_valido(info.get("freeCashflow"))
@@ -448,6 +508,41 @@ def puntuar_calidad(paquete: dict, fair_value: dict) -> dict:
     lecturas["fcf_sobre_beneficio"] = calidad_beneficio
     if es_valido(calidad_beneficio):
         sub["calidad_beneficio"] = escalar(calidad_beneficio, 0.4, 1.2)
+
+    # 12. Solidez del FCF: no es lo mismo un FCF negativo por CAPEX de
+    # expansión (CFO sigue positivo -- negocio operativo sano, invirtiendo
+    # fuerte en fábricas, centros de datos, capacidad) que uno causado por
+    # quema de caja operativa real (CFO también negativo -- el día a día
+    # del negocio no genera caja, señal mucho más grave). Es un criterio
+    # independiente de "calidad_beneficio" (que mide FCF/beneficio neto y
+    # exige beneficio neto positivo para poder calcularse).
+    ocf = valor_anio(fila(estados.get("flujo_caja"), "Operating Cash Flow", "Total Cash From Operating Activities"))
+    lecturas["fcf"] = fcf
+    lecturas["ocf"] = ocf
+    if es_valido(fcf):
+        if fcf > 0:
+            sub["fcf_solidez"] = 100.0
+        elif es_valido(ocf) and ocf > 0:
+            sub["fcf_solidez"] = 50.0
+        else:
+            sub["fcf_solidez"] = 0.0
+
+    # 13. Cobertura de intereses: EBIT / Gasto en intereses -- mide si la
+    # empresa puede PAGAR los intereses de su deuda con el beneficio
+    # operativo actual, algo que Deuda/Equity o Net Debt/EBITDA no capturan
+    # por sí solos (mirar cuánta deuda hay no dice si se puede atender).
+    ebit = valor_anio(fila(estados.get("resultados"), "EBIT", "Operating Income"))
+    gasto_intereses = valor_anio(
+        fila(estados.get("resultados"), "Interest Expense", "Interest Expense Non Operating")
+    )
+    cobertura_intereses = (
+        ebit / abs(gasto_intereses)
+        if es_valido(ebit) and es_valido(gasto_intereses) and gasto_intereses
+        else None
+    )
+    lecturas["cobertura_intereses"] = cobertura_intereses
+    if es_valido(cobertura_intereses):
+        sub["cobertura_intereses"] = escalar(cobertura_intereses, 1.5, 6.0)
 
     resultado = ponderar(sub, PESOS_CALIDAD)
     return {
@@ -488,3 +583,35 @@ def _cagr(serie: pd.Series | None) -> float | None:
     if reciente <= 0:
         return -1.0
     return (reciente / antiguo) ** (1 / anios) - 1
+
+
+def _calc_estabilidad_crecimiento(serie_trimestral: pd.Series | None) -> float:
+    """Multiplicador 0.55-1.0 según la estabilidad del crecimiento trimestral.
+
+    Se calcula el coeficiente de variación (desviación típica / media) de las
+    tasas de variación intertrimestral. Cuanto más errático el crecimiento
+    (trimestres muy dispares entre sí), menor el multiplicador aplicado sobre
+    el CAGR anual -- así un +25% CAGR sostenido y regular puntúa más que un
+    +25% CAGR que en realidad es un solo trimestre extraordinario arrastrando
+    tres flojos (o viceversa). Sin datos suficientes, no penaliza (1.0).
+    """
+    if serie_trimestral is None or len(serie_trimestral) < 4:
+        return 1.0
+    valores = serie_trimestral.dropna().astype(float)
+    if len(valores) < 4:
+        return 1.0
+    tasas = valores.pct_change().dropna()
+    tasas = tasas[tasas.abs() < 5]  # descarta variaciones disparatadas (base casi cero)
+    if len(tasas) < 2:
+        return 1.0
+    media, dispersion = float(tasas.mean()), float(tasas.std())
+    if not es_valido(media) or media == 0 or not es_valido(dispersion):
+        return 0.85
+    cv = abs(dispersion / media)
+    if cv <= 0.5:
+        return 1.0
+    if cv <= 1.0:
+        return 0.85
+    if cv <= 2.0:
+        return 0.7
+    return 0.55
