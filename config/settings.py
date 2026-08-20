@@ -102,20 +102,64 @@ DCF_CRECIMIENTO_MAX_SECTOR = {
 }
 
 # --------------------------------------------- pesos de calidad (Bloque 4) ----
+# Estructura de 4 bloques analíticos al 25% cada uno. Sustituye al esquema
+# anterior, que agregaba 9 criterios dentro de un único "piotroski" con peso
+# 18: ahora esos criterios están disueltos en métricas individuales visibles
+# (rotación de activos, margen bruto, ROA, apalancamiento, liquidez,
+# dilución), de modo que se ve exactamente qué falla y cuánto pesa.
+BLOQUES_CALIDAD = {
+    "I. Crecimiento y Eficiencia": {
+        "tendencia_ingresos": 12,
+        "tendencia_beneficios": 11,
+        "rotacion_activos": 2,
+    },
+    "II. Rentabilidad y Calidad": {
+        "roic": 8,
+        "calidad_beneficio": 5,
+        "margen_neto": 4,
+        "margen_bruto": 4,
+        "roa": 2,
+        "roe": 2,
+    },
+    "III. Salud Financiera": {
+        "net_debt_ebitda": 5,
+        "dilucion": 5,
+        "fcf_solidez": 4,
+        "cobertura_intereses": 4,
+        "current_ratio": 2,
+        "debt_equity": 2,
+        "apalancamiento": 2,
+        "liquidez_creciente": 1,
+    },
+    "IV. Valoración Relativa": {
+        "peg": 10,
+        "forward_per": 8,
+        "per_vs_historico": 4,
+        "per_vs_sector": 3,
+    },
+}
+# Vista plana (métrica -> peso) para `ponderar()`, que redistribuye el peso
+# de las métricas sin dato entre las disponibles. Suma 100.
 PESOS_CALIDAD = {
-    "piotroski": 18,
-    "per_vs_sector": 7,
-    "per_vs_historico": 6,
-    "forward_per": 5,
-    "margen_neto": 9,
-    "roe": 9,
-    "roic": 9,
-    "peg": 7,
-    "tendencia_ingresos": 8,
-    "tendencia_beneficios": 7,
-    "calidad_beneficio": 4,
-    "fcf_solidez": 5,
-    "cobertura_intereses": 6,
+    metrica: peso for bloque in BLOQUES_CALIDAD.values() for metrica, peso in bloque.items()
+}
+
+# Margen bruto mediano por sector (heurístico propio, como el resto de
+# medianas sectoriales de este archivo). Se evalúa el nivel frente al sector,
+# no solo si crece: un 85% estable dice más sobre el foso competitivo que un
+# 40% que sube un punto.
+MARGEN_BRUTO_MEDIANO_SECTOR = {
+    "Technology": 0.55,
+    "Communication Services": 0.45,
+    "Healthcare": 0.60,
+    "Consumer Cyclical": 0.35,
+    "Consumer Defensive": 0.32,
+    "Industrials": 0.30,
+    "Financial Services": 0.50,
+    "Energy": 0.28,
+    "Basic Materials": 0.25,
+    "Utilities": 0.35,
+    "Real Estate": 0.45,
 }
 
 # ----------------------------------------------- pesos de timing (Bloque 5) ----
