@@ -514,6 +514,39 @@ def obtener_hechos_sec(ticker: str, conceptos: tuple[str, ...] = ()) -> dict:
     return salida
 
 
+@st.cache_data(ttl=TTL_FUNDAMENTALES, show_spinner=False)
+def obtener_estimaciones_analistas(ticker: str) -> dict:
+    """Crecimiento y BPA estimados por los analistas (pestaña Analysis de Yahoo).
+
+    Devuelve el horizonte `+1y` (próximo ejercicio completo), que es el más
+    lejano que Yahoo publica de forma fiable: no hay estimaciones a 2-3 años
+    salvo la fila `LTG` de `growth_estimates`, que viene vacía en buena parte
+    de los valores. Se usa para alimentar el crecimiento del DCF y la
+    valoración por PEG con una cifra específica de la empresa, en vez de
+    extrapolar el crecimiento pasado.
+
+    Los nombres de estas propiedades cambian entre versiones de yfinance, así
+    que se prueban varias y se ignoran silenciosamente las que no existan.
+    """
+    salida = {"crecimiento_1y": None, "eps_1y": None, "n_analistas_eps": None}
+    t = _ticker(ticker)
+
+    est, _ = _pedir(lambda: t.earnings_estimate, intentos=1)
+    if isinstance(est, pd.DataFrame) and not est.empty and "+1y" in est.index:
+        fila = est.loc["+1y"]
+        salida["eps_1y"] = num(fila.get("avg"))
+        salida["crecimiento_1y"] = num(fila.get("growth"))
+        salida["n_analistas_eps"] = num(fila.get("numberOfAnalysts"))
+
+    if not es_valido(salida["crecimiento_1y"]):
+        cre, _ = _pedir(lambda: t.growth_estimates, intentos=1)
+        if isinstance(cre, pd.DataFrame) and not cre.empty and "+1y" in cre.index:
+            columna = "stockTrend" if "stockTrend" in cre.columns else cre.columns[0]
+            salida["crecimiento_1y"] = num(cre.loc["+1y", columna])
+
+    return salida
+
+
 # ============================================================ agregador único ==
 def obtener_paquete(ticker: str) -> dict:
     """Recopila en una sola estructura todo lo necesario para el análisis.
@@ -554,6 +587,7 @@ def obtener_paquete(ticker: str) -> dict:
         "earnings": obtener_earnings(ticker),
         "noticias": obtener_noticias(ticker),
         "consenso": obtener_consenso(ticker),
+        "estimaciones": obtener_estimaciones_analistas(ticker),
         "fx_usd_eur": obtener_fx_usd_eur(),
         "generado": datetime.utcnow().isoformat(timespec="seconds"),
     }
