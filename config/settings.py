@@ -63,9 +63,10 @@ BANDAS_VALORACION = [
 
 # ------------------------------------------------- pesos de valoración FV ----
 PESOS_FAIR_VALUE = {
-    "dcf": 0.30,
-    "multiplos": 0.30,
-    "ev_ebitda": 0.15,
+    "dcf": 0.25,
+    "multiplos": 0.15,
+    "ev_ebitda": 0.20,
+    "peg": 0.15,
     "consenso": 0.25,
 }
 # El consenso duplica peso si lo cubren >= 10 analistas. Se retiró el
@@ -81,7 +82,18 @@ DCF_WACC_DEFECTO = 0.09
 DCF_G_TERMINAL = 0.025
 DCF_CRECIMIENTO_MAX = 0.20  # techo por defecto si el sector no tiene uno propio
 DCF_CRECIMIENTO_MIN = -0.05
-DCF_CRECIMIENTO_MAX_ABSOLUTO = 0.40  # tope de seguridad aun con bonus por cobertura
+
+# WACC vía CAPM simplificado: tasa libre de riesgo + beta x prima de mercado.
+# El suelo del 6% anterior era indefendible para renta variable (implicaba
+# exigir a una acción poco más que a un bono) e inflaba sistemáticamente la
+# valoración de empresas con beta baja, que es justo donde el DCF más se
+# disparaba (NBIX: beta 0,55 -> WACC 6,7% -> DCF un +50% sobre el consenso).
+# La prima sube de 4,5% a 5,5%, más acorde con las primas históricas de
+# riesgo de mercado.
+DCF_TASA_LIBRE_RIESGO = 0.042
+DCF_PRIMA_MERCADO = 0.055
+DCF_WACC_MIN = 0.075
+DCF_WACC_MAX = 0.14
 
 # Techo de crecimiento diferenciado por sector: sectores de crecimiento
 # estructural alto (Tecnología, Salud) pueden sostener tasas más altas que
@@ -100,6 +112,17 @@ DCF_CRECIMIENTO_MAX_SECTOR = {
     "Utilities": 0.08,
     "Real Estate": 0.12,
 }
+
+# ------------------------------------------------ parámetros valoración PEG ---
+# PER justo = PEG objetivo x crecimiento estimado (en %), aplicado al BPA
+# estimado del próximo ejercicio. Regla de Lynch: un PEG de 1 representa un
+# precio razonable para el ritmo de crecimiento de la empresa. No se usa el
+# PEG mediano del sector como objetivo porque, al multiplicarse por el
+# crecimiento, valores de 1,8-1,9 disparan el PER justo a niveles absurdos
+# (NBIX: 1,9 x 17,3 = PER 33x -> ~390$, casi el doble del consenso).
+PEG_OBJETIVO = 1.0
+PEG_CRECIMIENTO_MIN = 0.05  # por debajo, el método no aporta señal fiable
+PEG_CRECIMIENTO_MAX = 0.25  # techo para no extrapolar crecimientos explosivos
 
 # --------------------------------------------- pesos de calidad (Bloque 4) ----
 # Estructura de 4 bloques analíticos al 25% cada uno. Sustituye al esquema
