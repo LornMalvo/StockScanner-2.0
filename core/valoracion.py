@@ -17,14 +17,20 @@ from config.settings import (
     CONSENSO_MIN_ANALISTAS,
     DCF_ANIOS,
     DCF_CRECIMIENTO_MAX,
-    DCF_CRECIMIENTO_MAX_ABSOLUTO,
     DCF_CRECIMIENTO_MAX_SECTOR,
     DCF_CRECIMIENTO_MIN,
     DCF_G_TERMINAL,
+    DCF_PRIMA_MERCADO,
+    DCF_TASA_LIBRE_RIESGO,
     DCF_WACC_DEFECTO,
+    DCF_WACC_MAX,
+    DCF_WACC_MIN,
     EV_EBITDA_MEDIANO_SECTOR,
     MARGEN_BRUTO_MEDIANO_SECTOR,
     MARGEN_NETO_MEDIANO_SECTOR,
+    PEG_CRECIMIENTO_MAX,
+    PEG_CRECIMIENTO_MIN,
+    PEG_OBJETIVO,
     PER_MEDIANO_SECTOR,
     PESOS_CALIDAD,
     PESOS_FAIR_VALUE,
@@ -79,8 +85,24 @@ def valorar_dcf(paquete: dict) -> tuple[float | None, dict]:
         detalle["notas"].append("Número de acciones no disponible")
         return None, detalle
 
-    # Crecimiento: estimación de analistas > CAGR histórico del FCF > 0 neutro.
-    crecimiento = primero_valido(info.get("earningsGrowth"), info.get("revenueGrowth"))
+    # Crecimiento, por orden de fiabilidad:
+    #   1) estimación explícita de analistas para el próximo ejercicio
+    #      (`growth_estimates`/`earnings_estimate` +1y). Es específica de la
+    #      empresa y la publican los mismos analistas cuyo precio objetivo
+    #      usamos como método independiente.
+    #   2) crecimiento de beneficios/ingresos de `info`.
+    #   3) CAGR histórico del propio FCF.
+    estimaciones = paquete.get("estimaciones") or {}
+    crecimiento = primero_valido(
+        estimaciones.get("crecimiento_1y"),
+        info.get("earningsGrowth"),
+        info.get("revenueGrowth"),
+    )
+    if es_valido(estimaciones.get("crecimiento_1y")):
+        detalle["notas"].append(
+            f"Crecimiento tomado del consenso de analistas (+1y): "
+            f"{float(estimaciones['crecimiento_1y']) * 100:.1f}%"
+        )
     if not es_valido(crecimiento) and fcf_serie is not None and len(fcf_serie) >= 3:
         antiguo, reciente = valor_anio(fcf_serie, len(fcf_serie) - 1), fcf_base
         anios = len(fcf_serie) - 1
@@ -90,30 +112,22 @@ def valorar_dcf(paquete: dict) -> tuple[float | None, dict]:
         detalle["notas"].append("Crecimiento no estimable; se usa el terminal")
         crecimiento = DCF_G_TERMINAL
 
-    # Techo de crecimiento diferenciado por sector (en vez de un techo único
-    # global): sectores de crecimiento estructural alto sostienen tasas más
-    # altas sin que sea síntoma de exceso de optimismo. Si además hay
-    # cobertura amplia de analistas (>= CONSENSO_MIN_ANALISTAS), se relaja
-    # un 25% adicional sobre el techo del sector, con un tope absoluto de
-    # seguridad: un consenso amplio corrobora de forma independiente que ese
-    # crecimiento es sostenible, no un caso aislado o una lectura puntual
-    # del dato de yfinance.
-    techo_sector = DCF_CRECIMIENTO_MAX_SECTOR.get(paquete.get("sector"), DCF_CRECIMIENTO_MAX)
-    n_analistas = paquete.get("consenso", {}).get("n_analistas")
-    if es_valido(n_analistas) and float(n_analistas) >= CONSENSO_MIN_ANALISTAS:
-        techo_crecimiento = min(techo_sector * 1.25, DCF_CRECIMIENTO_MAX_ABSOLUTO)
-        detalle["notas"].append(
-            f"Techo de crecimiento ampliado a {techo_crecimiento * 100:.0f}% "
-            f"por alta cobertura de analistas (\u2265{CONSENSO_MIN_ANALISTAS})"
-        )
-    else:
-        techo_crecimiento = techo_sector
+    # Techo de crecimiento diferenciado por sector. Ya no se amplía por alta
+    # cobertura de analistas: ese bonus (x1,25) nació para compensar que el
+    # crecimiento venía de `earningsGrowth`, y acababa usando la existencia de
+    # analistas para justificar un crecimiento que esos mismos analistas no
+    # respaldaban (NBIX: techo 31,25% frente al 17,3% que estimaban ellos).
+    # Ahora que el crecimiento sale directamente de su consenso, sobra.
+    techo_crecimiento = DCF_CRECIMIENTO_MAX_SECTOR.get(paquete.get("sector"), DCF_CRECIMIENTO_MAX)
 
     crecimiento = max(DCF_CRECIMIENTO_MIN, min(techo_crecimiento, float(crecimiento)))
     wacc = DCF_WACC_DEFECTO
     beta = primero_valido(info.get("beta"))
     if es_valido(beta):
-        wacc = max(0.06, min(0.14, 0.042 + float(beta) * 0.045))  # CAPM simplificado
+        wacc = max(
+            DCF_WACC_MIN,
+            min(DCF_WACC_MAX, DCF_TASA_LIBRE_RIESGO + float(beta) * DCF_PRIMA_MERCADO),
+        )
 
     caja = primero_valido(info.get("totalCash")) or 0.0
     deuda = primero_valido(info.get("totalDebt")) or 0.0
@@ -191,6 +205,58 @@ def valorar_multiplos(paquete: dict) -> tuple[float | None, dict]:
         }
     )
     return per_justo * bpa, detalle
+
+
+def valorar_peg(paquete: dict) -> tuple[float | None, dict]:
+    """Valoración por PEG con estimaciones reales de analistas a 1 año.
+
+    PER justo = PEG objetivo x crecimiento estimado (en puntos porcentuales),
+    aplicado al BPA estimado del próximo ejercicio. Es la regla de Lynch: una
+    empresa que crece al 17% anual "merece" un PER en torno a 17x.
+
+    Se usa exclusivamente el horizonte +1y porque es el más lejano que Yahoo
+    publica de forma fiable: no existen estimaciones a 2-3 años vista (la
+    fila LTG viene vacía en buena parte de los valores), así que cualquier
+    proyección más larga sería una extrapolación nuestra disfrazada de dato
+    de analista.
+    """
+    detalle = {"metodo": "PEG (estimaciones a 1 año)", "notas": []}
+    info = paquete.get("info", {})
+    estimaciones = paquete.get("estimaciones") or {}
+
+    bpa = primero_valido(estimaciones.get("eps_1y"), info.get("forwardEps"))
+    if not es_valido(bpa) or bpa <= 0:
+        detalle["notas"].append("BPA estimado no disponible o negativo")
+        return None, detalle
+
+    crecimiento = primero_valido(estimaciones.get("crecimiento_1y"), info.get("earningsGrowth"))
+    if not es_valido(crecimiento) or crecimiento <= 0:
+        detalle["notas"].append("Sin estimación de crecimiento: método no aplicable")
+        return None, detalle
+
+    g = max(PEG_CRECIMIENTO_MIN, min(PEG_CRECIMIENTO_MAX, float(crecimiento)))
+    if g != float(crecimiento):
+        detalle["notas"].append(
+            f"Crecimiento acotado de {float(crecimiento) * 100:.1f}% a {g * 100:.1f}%"
+        )
+
+    per_justo = PEG_OBJETIVO * (g * 100)
+    valor = per_justo * bpa
+
+    detalle.update(
+        {
+            "bpa_estimado": bpa,
+            "crecimiento": g,
+            "peg_objetivo": PEG_OBJETIVO,
+            "per_justo": per_justo,
+            "valor_accion": valor,
+            "formula": (
+                f"PER justo = PEG objetivo {PEG_OBJETIVO:.1f} × crecimiento {g * 100:.1f}% "
+                f"= {per_justo:.1f}× · BPA estimado +1a {bpa:,.2f} $ → {valor:,.2f} $"
+            ),
+        }
+    )
+    return (valor if valor > 0 else None), detalle
 
 
 def valorar_ev_ebitda(paquete: dict) -> tuple[float | None, dict]:
@@ -301,13 +367,21 @@ def calcular_fair_value(paquete: dict) -> dict:
     dcf, det_dcf = valorar_dcf(paquete)
     mult, det_mult = valorar_multiplos(paquete)
     ev_ebitda, det_ev_ebitda = valorar_ev_ebitda(paquete)
+    peg_val, det_peg = valorar_peg(paquete)
     objetivo, multiplicador = _consenso_ponderable(paquete.get("consenso", {}))
     n_analistas = paquete.get("consenso", {}).get("n_analistas")
 
     pesos = dict(PESOS_FAIR_VALUE)
     pesos["consenso"] = pesos["consenso"] * multiplicador
     resultado = ponderar(
-        {"dcf": dcf, "multiplos": mult, "ev_ebitda": ev_ebitda, "consenso": objetivo}, pesos
+        {
+            "dcf": dcf,
+            "multiplos": mult,
+            "ev_ebitda": ev_ebitda,
+            "peg": peg_val,
+            "consenso": objetivo,
+        },
+        pesos,
     )
 
     precio = paquete.get("precio")
@@ -322,6 +396,7 @@ def calcular_fair_value(paquete: dict) -> dict:
             "DCF": {"valor": dcf, "detalle": det_dcf},
             "Múltiplos": {"valor": mult, "detalle": det_mult},
             "EV/EBITDA sectorial": {"valor": ev_ebitda, "detalle": det_ev_ebitda},
+            "Valoración PEG": {"valor": peg_val, "detalle": det_peg},
             "Consenso analistas": {
                 "valor": objetivo,
                 "detalle": {
