@@ -631,6 +631,7 @@ def _clave_peso(nombre: str) -> str:
         "DCF": "dcf",
         "Múltiplos": "multiplos",
         "EV/EBITDA sectorial": "ev_ebitda",
+        "Valoración PEG": "peg",
         "Consenso analistas": "consenso",
     }.get(nombre, nombre.lower())
 
