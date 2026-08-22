@@ -12,26 +12,45 @@ import statistics
 import pandas as pd
 
 from config.settings import (
+    BANDA_MIN_ANALISTAS,
+    BANDA_SUELO,
+    BANDA_TECHO,
     BANDAS_VALORACION,
     BLOQUES_CALIDAD,
     CONSENSO_MIN_ANALISTAS,
     DCF_ANIOS,
+    DCF_ANOMALIA_FCF,
     DCF_CRECIMIENTO_MAX,
     DCF_CRECIMIENTO_MAX_SECTOR,
     DCF_CRECIMIENTO_MIN,
+    DCF_DEUDA_MKTCAP_MAX,
     DCF_G_TERMINAL,
+    DCF_KD_MAX,
+    DCF_KD_MIN,
+    DCF_MULTIPLO_TERMINAL_MAX,
     DCF_PRIMA_MERCADO,
+    DCF_SECTORES_APALANCADOS,
     DCF_TASA_LIBRE_RIESGO,
+    DCF_TIPO_IMPOSITIVO_DEFECTO,
     DCF_WACC_DEFECTO,
     DCF_WACC_MAX,
+    DCF_WACC_MAX_PONDERADO,
     DCF_WACC_MIN,
+    DCF_WACC_MIN_PONDERADO,
+    EV_EBITDA_INDUSTRIAS_EXCLUIDAS,
+    EV_EBITDA_MEDIANO_INDUSTRIA,
     EV_EBITDA_MEDIANO_SECTOR,
+    EXCLUSION_SUELO,
+    EXCLUSION_TECHO,
+    FORWARD_PER_MEDIANO_SECTOR,
     MARGEN_BRUTO_MEDIANO_SECTOR,
     MARGEN_NETO_MEDIANO_SECTOR,
     PEG_CRECIMIENTO_MAX,
     PEG_CRECIMIENTO_MIN,
     PEG_OBJETIVO,
+    PER_HIST_TECHO_VS_SECTOR,
     PER_MEDIANO_SECTOR,
+    PESO_PER_SECTOR,
     PESOS_CALIDAD,
     PESOS_FAIR_VALUE,
     ROE_MEDIANO_SECTOR,
@@ -62,11 +81,102 @@ def valor_anio(serie: pd.Series | None, desplazamiento: int = 0) -> float | None
 
 
 # ------------------------------------------------------------ métodos FV ----
+def _base_fcf_normalizada(fcf_serie: pd.Series | None, info: dict, estados: dict) -> tuple[float | None, str]:
+    """Base de FCF distinguiendo TENDENCIA de RUIDO, y ciclo inversor de
+    declive real.
+
+    Antes se sustituía por la mediana de 3 años en cuanto el último
+    ejercicio se desviaba >35% en cualquier sentido. Eso penalizaba a
+    empresas con tendencia real (AVGO: FCF 14,1 -> 16,3 -> 17,6 -> 19,4 M$;
+    el último año no es un pico insostenible, es la tendencia) y no
+    distinguía capex de crecimiento de declive real del negocio.
+
+    Reglas, en orden:
+      1. FCF más reciente <= 0 -> None (se excluye; mejor ausente que un
+         número inventado a partir de un valle del ciclo).
+      2. Serie de FCF monótona CRECIENTE -> se usa el último (es tendencia).
+      3. Serie de FCF monótona DECRECIENTE:
+           - si los INGRESOS crecen -> ciclo inversor (capex de crecimiento
+             comiéndose el flujo, caso Amazon con la IA): se usa la media
+             de los 3 años, no el mínimo reciente.
+           - si los ingresos también caen -> declive real: se usa el
+             último, que es la lectura correcta.
+      4. Serie oscilante con desviación > DCF_ANOMALIA_FCF sobre la
+         mediana -> mediana de los 3 años.
+      5. Resto -> último.
+    """
+    if fcf_serie is None or len(fcf_serie) == 0:
+        v = primero_valido(info.get("freeCashflow"))
+        return (v if es_valido(v) and v > 0 else None), "FCF de `info` (sin serie histórica)"
+
+    ultimos = [num(x) for x in list(fcf_serie.iloc[:4]) if es_valido(x)]
+    if not ultimos:
+        return None, "sin FCF"
+    ultimo = ultimos[0]
+    if ultimo <= 0:
+        return None, f"último FCF negativo ({ultimo / 1e6:,.0f} M$)"
+    if len(ultimos) < 3:
+        return ultimo, "último ejercicio (serie corta)"
+
+    tres = ultimos[:3]
+    creciente = tres[0] > tres[1] > tres[2]
+    decreciente = tres[0] < tres[1] < tres[2]
+
+    if creciente:
+        return ultimo, "último ejercicio (tendencia creciente)"
+
+    if decreciente:
+        ingresos = fila(estados.get("resultados"), "Total Revenue", "Operating Revenue")
+        ingresos_crecen = None
+        if ingresos is not None and len(ingresos) >= 3:
+            ir = [num(x) for x in list(ingresos.iloc[:3]) if es_valido(x)]
+            if len(ir) == 3:
+                ingresos_crecen = ir[0] > ir[1] > ir[2]
+        if ingresos_crecen:
+            return sum(tres) / 3, "media 3 años (ciclo inversor: ingresos suben, FCF baja)"
+        return ultimo, "último ejercicio (declive real: ingresos y FCF bajan)"
+
+    mediana = statistics.median(tres)
+    if mediana > 0 and abs(ultimo / mediana - 1) > DCF_ANOMALIA_FCF:
+        return mediana, f"mediana 3 años (serie oscilante, último desvía {ultimo / mediana - 1:+.0%})"
+    return ultimo, "último ejercicio"
+
+
 def valorar_dcf(paquete: dict) -> tuple[float | None, dict]:
-    """Descuento de flujos de caja libres con crecimiento decreciente."""
+    """DCF con FCFF (flujo desapalancado) y WACC ponderado real.
+
+    Metodología revisada tras detectar dos errores en la versión anterior:
+
+    1) El FCF de Yahoo (`Operating Cash Flow - CapEx`) ya viene neto de
+       intereses pagados (US GAAP los incluye en el flujo operativo): es un
+       flujo APALANCADO, disponible para el accionista. La versión anterior
+       lo descontaba a una tasa de coste de recursos propios y ADEMÁS
+       restaba la deuda completa al hacer el puente a equity — contando la
+       deuda dos veces. En empresas apalancadas (REITs, utilities, telecos)
+       esto producía valoraciones absurdas (AMT: 25,99 $ vs consenso de
+       215,70 $). Ahora se desapalanca expresamente: FCFF = FCF + intereses
+       x (1 - tipo impositivo), y el WACC pondera Ke y Kd por estructura de
+       capital real, así que la deuda se cuenta una sola vez, en el puente.
+
+    2) El valor terminal (Gordon growth) puede implicar múltiplos de salida
+       de 30x+ el FCF del año 5 cuando el WACC es bajo, muy por encima de lo
+       que paga el mercado. Se acota con DCF_MULTIPLO_TERMINAL_MAX.
+
+    Aviso honesto sobre el método: en la calibración sobre 29 tickers
+    multisector, el DCF -incluso con esta metodología corregida- siguió
+    siendo el método más alejado del consenso de analistas (mediana de
+    desviación ~50%, frente a ~25-35% de multiplos/ev_ebitda/peg). Para
+    empresas de alto crecimiento (AVGO, MSFT) ninguna tasa de descuento
+    defendible acerca el DCF al consenso: el mercado paga múltiplos de
+    salida que un DCF ortodoxo no puede sostener. Por eso su peso en
+    PESOS_FAIR_VALUE se redujo a 0,10 en vez de retirarlo: sigue aportando
+    señal en empresas de FCF estable y deuda normal, pero pesa poco donde
+    es sistemáticamente ruidoso.
+    """
     detalle = {"metodo": "DCF", "notas": []}
     estados = paquete.get("estados", {})
     info = paquete.get("info", {})
+    sector = paquete.get("sector")
 
     fcf_serie = fila(estados.get("flujo_caja"), "Free Cash Flow")
     if fcf_serie is None:
@@ -75,9 +185,9 @@ def valorar_dcf(paquete: dict) -> tuple[float | None, dict]:
         if ocf is not None and capex is not None:
             fcf_serie = (ocf + capex).dropna()
 
-    fcf_base = valor_anio(fcf_serie) or primero_valido(info.get("freeCashflow"))
+    fcf_base, origen_fcf = _base_fcf_normalizada(fcf_serie, info, estados)
     if not es_valido(fcf_base) or fcf_base <= 0:
-        detalle["notas"].append("Flujo de caja libre no disponible o negativo")
+        detalle["notas"].append(f"Flujo de caja libre no disponible o negativo ({origen_fcf})")
         return None, detalle
 
     acciones = primero_valido(info.get("sharesOutstanding"), info.get("impliedSharesOutstanding"))
@@ -85,82 +195,143 @@ def valorar_dcf(paquete: dict) -> tuple[float | None, dict]:
         detalle["notas"].append("Número de acciones no disponible")
         return None, detalle
 
-    # Crecimiento, por orden de fiabilidad:
-    #   1) estimación explícita de analistas para el próximo ejercicio
-    #      (`growth_estimates`/`earnings_estimate` +1y). Es específica de la
-    #      empresa y la publican los mismos analistas cuyo precio objetivo
-    #      usamos como método independiente.
-    #   2) crecimiento de beneficios/ingresos de `info`.
-    #   3) CAGR histórico del propio FCF.
-    estimaciones = paquete.get("estimaciones") or {}
-    crecimiento = primero_valido(
-        estimaciones.get("crecimiento_1y"),
-        info.get("earningsGrowth"),
-        info.get("revenueGrowth"),
-    )
-    if es_valido(estimaciones.get("crecimiento_1y")):
-        detalle["notas"].append(
-            f"Crecimiento tomado del consenso de analistas (+1y): "
-            f"{float(estimaciones['crecimiento_1y']) * 100:.1f}%"
-        )
-    if not es_valido(crecimiento) and fcf_serie is not None and len(fcf_serie) >= 3:
-        antiguo, reciente = valor_anio(fcf_serie, len(fcf_serie) - 1), fcf_base
-        anios = len(fcf_serie) - 1
-        if es_valido(antiguo) and antiguo > 0 and anios > 0:
-            crecimiento = (reciente / antiguo) ** (1 / anios) - 1
-    if not es_valido(crecimiento):
-        detalle["notas"].append("Crecimiento no estimable; se usa el terminal")
-        crecimiento = DCF_G_TERMINAL
-
-    # Techo de crecimiento diferenciado por sector. Ya no se amplía por alta
-    # cobertura de analistas: ese bonus (x1,25) nació para compensar que el
-    # crecimiento venía de `earningsGrowth`, y acababa usando la existencia de
-    # analistas para justificar un crecimiento que esos mismos analistas no
-    # respaldaban (NBIX: techo 31,25% frente al 17,3% que estimaban ellos).
-    # Ahora que el crecimiento sale directamente de su consenso, sobra.
-    techo_crecimiento = DCF_CRECIMIENTO_MAX_SECTOR.get(paquete.get("sector"), DCF_CRECIMIENTO_MAX)
-
-    crecimiento = max(DCF_CRECIMIENTO_MIN, min(techo_crecimiento, float(crecimiento)))
-    wacc = DCF_WACC_DEFECTO
-    beta = primero_valido(info.get("beta"))
-    if es_valido(beta):
-        wacc = max(
-            DCF_WACC_MIN,
-            min(DCF_WACC_MAX, DCF_TASA_LIBRE_RIESGO + float(beta) * DCF_PRIMA_MERCADO),
-        )
-
     caja = primero_valido(info.get("totalCash")) or 0.0
     deuda = primero_valido(info.get("totalDebt")) or 0.0
 
-    valor_presente = 0.0
-    flujo = fcf_base
-    for anio in range(1, DCF_ANIOS + 1):
-        g = crecimiento * (1 - (anio - 1) / DCF_ANIOS) + DCF_G_TERMINAL * ((anio - 1) / DCF_ANIOS)
-        flujo *= 1 + g
-        valor_presente += flujo / (1 + wacc) ** anio
+    # Guardarraíl: deuda contaminada por financiera cautiva (Ford Credit y
+    # similares no son estructura de capital del negocio industrial).
+    equity_mercado = primero_valido(info.get("marketCap"))
+    if (
+        es_valido(equity_mercado) and equity_mercado > 0 and deuda > 0
+        and sector not in DCF_SECTORES_APALANCADOS
+        and deuda / equity_mercado > DCF_DEUDA_MKTCAP_MAX
+    ):
+        detalle["notas"].append(
+            f"Deuda/capitalización {deuda / equity_mercado:.1f}× en sector no apalancado: "
+            "posible financiera cautiva incluida en la deuda total, dato no fiable"
+        )
+        return None, detalle
+
+    # Tipo impositivo efectivo, para desapalancar el flujo y el Kd.
+    tipo_impositivo = primero_valido(info.get("effectiveTaxRate"))
+    if not es_valido(tipo_impositivo) or not (0.0 <= tipo_impositivo <= 0.45):
+        tipo_impositivo = DCF_TIPO_IMPOSITIVO_DEFECTO
+
+    # FCFF = FCF (ya neto de intereses) + intereses x (1 - t): desapalanca
+    # el flujo para que sea coherente con un WACC que también pondera deuda.
+    gasto_interes = valor_anio(
+        fila(estados.get("resultados"), "Interest Expense", "Interest Expense Non Operating")
+    )
+    intereses = abs(gasto_interes) if es_valido(gasto_interes) else 0.0
+    fcff = fcf_base + intereses * (1 - tipo_impositivo)
+
+    # Ke: coste de recursos propios (CAPM).
+    ke = DCF_WACC_DEFECTO
+    beta = primero_valido(info.get("beta"))
+    if es_valido(beta):
+        ke = max(DCF_WACC_MIN, min(DCF_WACC_MAX, DCF_TASA_LIBRE_RIESGO + float(beta) * DCF_PRIMA_MERCADO))
+
+    # Kd: coste de deuda REAL (intereses/deuda) con preferencia sobre un
+    # suelo forzado, que arregla un ticker con deuda cara y rompe otro con
+    # deuda genuinamente barata.
+    if deuda > 0 and intereses > 0:
+        kd = intereses / deuda
+        origen_kd = "real (intereses / deuda)"
+    else:
+        kd = DCF_TASA_LIBRE_RIESGO + 0.015
+        origen_kd = "estimado (sin dato de intereses)"
+    kd_antes_suelo = kd
+    kd = max(DCF_KD_MIN, min(DCF_KD_MAX, kd))
+    if kd != kd_antes_suelo and origen_kd.startswith("real"):
+        origen_kd = "real, ajustado al suelo mínimo"
+
+    # WACC ponderado por estructura de capital real (equity a precio de
+    # mercado, deuda contable).
+    if not es_valido(equity_mercado) and es_valido(paquete.get("precio")):
+        equity_mercado = float(paquete["precio"]) * acciones
+    if not es_valido(equity_mercado) or equity_mercado <= 0:
+        wacc = ke
+    else:
+        capital_total = equity_mercado + deuda
+        wacc = (equity_mercado / capital_total) * ke + (deuda / capital_total) * kd * (1 - tipo_impositivo)
+    wacc = max(DCF_WACC_MIN_PONDERADO, min(DCF_WACC_MAX_PONDERADO, wacc))
+
+    # Crecimiento, por orden de fiabilidad: consenso de analistas -> CAGR
+    # de ingresos -> CAGR de FCF. Ya no se usa `earningsGrowth`, que es
+    # crecimiento interanual TRIMESTRAL (ruidoso, no una tasa de largo
+    # plazo) y podía pegar el crecimiento al suelo para empresas con
+    # trimestres puntuales flojos (Amazon: -5% perpetuo con 60 analistas
+    # cubriendo un consenso al alza).
+    estimaciones = paquete.get("estimaciones") or {}
+    crecimiento = primero_valido(estimaciones.get("crecimiento_1y"))
+    origen_g = "consenso de analistas (+1y)"
+    if not es_valido(crecimiento):
+        ingresos = fila(estados.get("resultados"), "Total Revenue", "Operating Revenue")
+        if ingresos is not None and len(ingresos) >= 3:
+            antiguo, reciente = valor_anio(ingresos, len(ingresos) - 1), valor_anio(ingresos, 0)
+            anios = len(ingresos) - 1
+            if es_valido(antiguo) and antiguo > 0 and es_valido(reciente) and reciente > 0 and anios > 0:
+                crecimiento = (reciente / antiguo) ** (1 / anios) - 1
+                origen_g = "CAGR de ingresos"
+    if not es_valido(crecimiento) and fcf_serie is not None and len(fcf_serie) >= 3:
+        antiguo = valor_anio(fcf_serie, len(fcf_serie) - 1)
+        anios = len(fcf_serie) - 1
+        if es_valido(antiguo) and antiguo > 0 and anios > 0:
+            crecimiento = (fcf_base / antiguo) ** (1 / anios) - 1
+            origen_g = "CAGR del FCF"
+    if not es_valido(crecimiento):
+        crecimiento, origen_g = DCF_G_TERMINAL, "terminal (sin dato estimable)"
+
+    techo_crecimiento = DCF_CRECIMIENTO_MAX_SECTOR.get(sector, DCF_CRECIMIENTO_MAX)
+    # Suelo a 0%: proyectar decrecimiento perpetuo no es un caso base
+    # defendible para una empresa con cobertura de analistas.
+    crecimiento = max(0.0, min(techo_crecimiento, float(crecimiento)))
 
     if wacc <= DCF_G_TERMINAL:
         detalle["notas"].append("WACC inferior al crecimiento terminal: DCF descartado")
         return None, detalle
 
-    terminal = flujo * (1 + DCF_G_TERMINAL) / (wacc - DCF_G_TERMINAL)
+    valor_presente = 0.0
+    flujo = fcff
+    for anio in range(1, DCF_ANIOS + 1):
+        g = crecimiento * (1 - (anio - 1) / DCF_ANIOS) + DCF_G_TERMINAL * ((anio - 1) / DCF_ANIOS)
+        flujo *= 1 + g
+        valor_presente += flujo / (1 + wacc) ** anio
+
+    # Valor terminal con tope explícito al múltiplo de salida implícito.
+    terminal_gordon = flujo * (1 + DCF_G_TERMINAL) / (wacc - DCF_G_TERMINAL)
+    terminal_tope = flujo * DCF_MULTIPLO_TERMINAL_MAX
+    terminal = min(terminal_gordon, terminal_tope)
+    topado = terminal_gordon > terminal_tope
     valor_presente += terminal / (1 + wacc) ** DCF_ANIOS
+
     equity = valor_presente + caja - deuda
     por_accion = equity / acciones
+    multiplo_terminal_real = terminal / flujo
 
     detalle.update(
         {
             "fcf_base": fcf_base,
+            "origen_fcf": origen_fcf,
+            "fcff": fcff,
             "crecimiento": crecimiento,
+            "origen_crecimiento": origen_g,
+            "ke": ke,
+            "kd": kd,
+            "origen_kd": origen_kd,
             "wacc": wacc,
+            "multiplo_terminal": multiplo_terminal_real,
             "valor_empresa": valor_presente,
             "valor_accion": por_accion,
             "formula": (
-                f"FCF base {fcf_base / 1e6:,.0f} M$ → proyectado {DCF_ANIOS} años con crecimiento "
-                f"inicial {crecimiento * 100:.1f}% decayendo a terminal {DCF_G_TERMINAL * 100:.1f}%, "
-                f"descontado a WACC {wacc * 100:.1f}%. Equity = VP flujos ({valor_presente / 1e6:,.0f} M$) "
-                f"+ caja ({caja / 1e6:,.0f} M$) − deuda ({deuda / 1e6:,.0f} M$), "
-                f"÷ {acciones / 1e6:,.0f} M acciones → {por_accion:,.2f} $"
+                f"FCF base {fcf_base / 1e6:,.0f} M$ ({origen_fcf}) → FCFF (desapalancado) "
+                f"{fcff / 1e6:,.0f} M$ → proyectado {DCF_ANIOS} años con crecimiento inicial "
+                f"{crecimiento * 100:.1f}% ({origen_g}) decayendo a terminal {DCF_G_TERMINAL * 100:.1f}%, "
+                f"descontado a WACC ponderado {wacc * 100:.1f}% (Ke {ke * 100:.1f}% / Kd {kd * 100:.1f}%, "
+                f"{origen_kd}). Valor terminal a {multiplo_terminal_real:.1f}× el flujo del año "
+                f"{DCF_ANIOS}{' (topado)' if topado else ''}. "
+                f"Equity = VP flujos ({valor_presente / 1e6:,.0f} M$) + caja ({caja / 1e6:,.0f} M$) "
+                f"− deuda ({deuda / 1e6:,.0f} M$), ÷ {acciones / 1e6:,.0f} M acciones → {por_accion:,.2f} $"
             ),
         }
     )
@@ -168,38 +339,79 @@ def valorar_dcf(paquete: dict) -> tuple[float | None, dict]:
 
 
 def valorar_multiplos(paquete: dict) -> tuple[float | None, dict]:
-    """PER justo = mediana entre PER histórico propio y PER sectorial."""
+    """PER justo = media ponderada entre PER sectorial y PER histórico propio.
+
+    Dos correcciones sobre la versión anterior:
+
+    1) Coherencia forward/trailing. El BPA usado es forward cuando existe,
+       pero se comparaba contra `PER_MEDIANO_SECTOR`, una tabla TRAILING —
+       mezclar un BPA futuro con un múltiplo pasado infla el método de
+       forma sistemática. Ahora, con BPA forward se usa
+       `FORWARD_PER_MEDIANO_SECTOR` y el PER histórico (que es trailing por
+       construcción) se reescala por la relación forward/trailing del
+       sector para que ambos términos hablen el mismo idioma.
+
+    2) Techo relativo en vez de absoluto. El filtro anterior descartaba
+       solo PER > 60, dejando pasar valores como un PER histórico de 44,1x
+       (mediana real de 5 años) en un sector cuya referencia forward es
+       ~24x. Ahora el histórico no puede superar PER_HIST_TECHO_VS_SECTOR
+       veces el sectorial.
+    """
     detalle = {"metodo": "Múltiplos", "notas": []}
     info = paquete.get("info", {})
+    sector = paquete.get("sector")
 
-    bpa = primero_valido(info.get("forwardEps"), info.get("trailingEps"))
+    bpa_forward = primero_valido(info.get("forwardEps"))
+    es_forward = es_valido(bpa_forward) and bpa_forward > 0
+    bpa = bpa_forward if es_forward else primero_valido(info.get("trailingEps"))
     if not es_valido(bpa) or bpa <= 0:
         detalle["notas"].append("BPA no disponible o negativo")
         return None, detalle
 
-    per_sector = PER_MEDIANO_SECTOR.get(paquete.get("sector"))
+    tabla_sector = FORWARD_PER_MEDIANO_SECTOR if es_forward else PER_MEDIANO_SECTOR
+    per_sector = tabla_sector.get(sector)
     per_historico = calcular_per_historico(paquete)
-    candidatos = [p for p in (per_sector, per_historico) if es_valido(p) and 0 < p < 60]
-    if not candidatos:
+
+    recortado = False
+    if es_valido(per_historico) and es_forward:
+        per_trailing_sector = PER_MEDIANO_SECTOR.get(sector)
+        per_forward_sector = FORWARD_PER_MEDIANO_SECTOR.get(sector)
+        if es_valido(per_trailing_sector) and es_valido(per_forward_sector) and per_trailing_sector > 0:
+            per_historico = per_historico * (per_forward_sector / per_trailing_sector)
+
+    if es_valido(per_historico) and es_valido(per_sector):
+        techo = per_sector * PER_HIST_TECHO_VS_SECTOR
+        if per_historico > techo:
+            per_historico, recortado = techo, True
+
+    if es_valido(per_sector) and es_valido(per_historico):
+        per_justo = PESO_PER_SECTOR * per_sector + (1 - PESO_PER_SECTOR) * per_historico
+    elif es_valido(per_sector) or es_valido(per_historico):
+        per_justo = per_sector if es_valido(per_sector) else per_historico
+    else:
         detalle["notas"].append("Sin referencia de PER sectorial ni histórica")
         return None, detalle
 
-    per_justo = sum(candidatos) / len(candidatos)
     partes = []
     if es_valido(per_sector):
-        partes.append(f"PER sector {per_sector:.1f}×")
+        partes.append(f"PER sector {'forward' if es_forward else 'trailing'} {per_sector:.1f}×")
     if es_valido(per_historico):
-        partes.append(f"PER histórico propio 5a (mediana) {per_historico:.1f}×")
-    bpa_origen = "Forward" if es_valido(info.get("forwardEps")) else "TTM"
+        partes.append(
+            f"PER histórico propio 5a (mediana){' [recortado al techo sectorial]' if recortado else ''} "
+            f"{per_historico:.1f}×"
+        )
+    bpa_origen = "Forward" if es_forward else "TTM"
     detalle.update(
         {
             "bpa": bpa,
             "per_sector": per_sector,
             "per_historico_5a": per_historico,
+            "per_recortado": recortado,
             "per_justo": per_justo,
             "valor_accion": per_justo * bpa,
             "formula": (
-                f"PER justo = media [ {' ; '.join(partes)} ] = {per_justo:.1f}× "
+                f"PER justo = {PESO_PER_SECTOR * 100:.0f}% sector + {(1 - PESO_PER_SECTOR) * 100:.0f}% "
+                f"histórico [ {' ; '.join(partes)} ] = {per_justo:.1f}× "
                 f"× BPA {bpa_origen} {bpa:,.2f} $ → {per_justo * bpa:,.2f} $"
             ),
         }
@@ -230,11 +442,18 @@ def valorar_peg(paquete: dict) -> tuple[float | None, dict]:
         return None, detalle
 
     crecimiento = primero_valido(estimaciones.get("crecimiento_1y"), info.get("earningsGrowth"))
-    if not es_valido(crecimiento) or crecimiento <= 0:
+    if not es_valido(crecimiento):
         detalle["notas"].append("Sin estimación de crecimiento: método no aplicable")
         return None, detalle
+    if crecimiento < PEG_CRECIMIENTO_MIN:
+        detalle["notas"].append(
+            f"Crecimiento estimado {crecimiento * 100:.1f}% por debajo del {PEG_CRECIMIENTO_MIN * 100:.0f}%: "
+            "el PEG no es aplicable a empresas de crecimiento bajo (implicaría un PER "
+            "justo indefendiblemente bajo). Método excluido, no pinzado."
+        )
+        return None, detalle
 
-    g = max(PEG_CRECIMIENTO_MIN, min(PEG_CRECIMIENTO_MAX, float(crecimiento)))
+    g = min(PEG_CRECIMIENTO_MAX, float(crecimiento))
     if g != float(crecimiento):
         detalle["notas"].append(
             f"Crecimiento acotado de {float(crecimiento) * 100:.1f}% a {g * 100:.1f}%"
@@ -260,10 +479,11 @@ def valorar_peg(paquete: dict) -> tuple[float | None, dict]:
 
 
 def valorar_ev_ebitda(paquete: dict) -> tuple[float | None, dict]:
-    """EV/EBITDA sectorial. Sustituye al DDM (retirado: solo aplicaba a
-    empresas con dividendo y quedaba inútil en el resto de casos).
+    """EV/EBITDA por industria (con fallback a sector). Sustituye al DDM
+    (retirado: solo aplicaba a empresas con dividendo y quedaba inútil en
+    el resto de casos).
 
-    Equity Value = EBITDA x múltiplo objetivo del sector - Deuda neta;
+    Equity Value = EBITDA x múltiplo objetivo - Deuda neta;
     Precio = Equity Value / acciones en circulación. Se separa Enterprise
     Value de Equity Value explícitamente en vez de escalar el precio
     linealmente por el ratio de múltiplos (ese atajo asume implícitamente
@@ -275,18 +495,36 @@ def valorar_ev_ebitda(paquete: dict) -> tuple[float | None, dict]:
     el tipo impositivo, y aplica igual de bien con o sin reparto de
     dividendo -- por eso cubre el hueco que dejaba el DDM sin depender de
     la política de dividendo de la empresa.
+
+    El múltiplo se busca primero por INDUSTRIA (más específico que el
+    sector: un único 14x para Healthcare no distinguía biotecnología en
+    crecimiento de una aseguradora médica o una farmacéutica madura) y solo
+    cae al múltiplo de sector si la industria no está en la tabla.
     """
     detalle = {"metodo": "EV/EBITDA", "notas": []}
     info = paquete.get("info", {})
+    industria = (paquete.get("industria") or "").strip()
+
+    if industria in EV_EBITDA_INDUSTRIAS_EXCLUIDAS:
+        detalle["notas"].append(
+            f"«{industria}»: el EBITDA no es una base fiable para este tipo de negocio "
+            "(p. ej. biotecnología en rampa comercial, sin ingresos de producto estables); "
+            "método excluido en vez de forzar un múltiplo que no representa la realidad."
+        )
+        return None, detalle
 
     ebitda = primero_valido(info.get("ebitda"))
     if not es_valido(ebitda) or ebitda <= 0:
         detalle["notas"].append("EBITDA no disponible o negativo")
         return None, detalle
 
-    multiplo_sector = EV_EBITDA_MEDIANO_SECTOR.get(paquete.get("sector"))
-    if not es_valido(multiplo_sector):
-        detalle["notas"].append("Sin múltiplo EV/EBITDA de referencia para el sector")
+    multiplo = EV_EBITDA_MEDIANO_INDUSTRIA.get(industria)
+    origen_multiplo = f"industria «{industria}»"
+    if not es_valido(multiplo):
+        multiplo = EV_EBITDA_MEDIANO_SECTOR.get(paquete.get("sector"))
+        origen_multiplo = "sector (sin múltiplo específico de industria)"
+    if not es_valido(multiplo):
+        detalle["notas"].append("Sin múltiplo EV/EBITDA de referencia para el sector ni la industria")
         return None, detalle
 
     acciones = primero_valido(info.get("sharesOutstanding"), info.get("impliedSharesOutstanding"))
@@ -295,18 +533,19 @@ def valorar_ev_ebitda(paquete: dict) -> tuple[float | None, dict]:
         return None, detalle
 
     deuda_neta = (primero_valido(info.get("totalDebt")) or 0.0) - (primero_valido(info.get("totalCash")) or 0.0)
-    equity_value = ebitda * multiplo_sector - deuda_neta
+    equity_value = ebitda * multiplo - deuda_neta
     por_accion = equity_value / acciones
 
     detalle.update(
         {
             "ebitda": ebitda,
-            "multiplo_sector": multiplo_sector,
+            "multiplo": multiplo,
+            "origen_multiplo": origen_multiplo,
             "deuda_neta": deuda_neta,
             "equity_value": equity_value,
             "valor_accion": por_accion,
             "formula": (
-                f"[ EBITDA {ebitda / 1e6:,.0f} M$ × múltiplo sector {multiplo_sector:.1f}× "
+                f"[ EBITDA {ebitda / 1e6:,.0f} M$ × múltiplo {origen_multiplo} {multiplo:.1f}× "
                 f"− deuda neta {deuda_neta / 1e6:,.0f} M$ ] ÷ {acciones / 1e6:,.0f} M acciones "
                 f"→ {por_accion:,.2f} $"
             ),
@@ -361,9 +600,54 @@ def _consenso_ponderable(consenso: dict) -> tuple[float | None, float]:
     return float(objetivo), (2.0 if doble else 1.0)
 
 
+def _aplicar_banda_cordura(valores: dict, ancla: float | None) -> tuple[dict, dict]:
+    """Recorta o excluye cada método según su distancia al ancla (consenso
+    de analistas, o mediana de los métodos si no hay cobertura suficiente).
+
+    Dos niveles, asimétricos:
+      - Dentro de [ancla/BANDA_SUELO, ancla*BANDA_TECHO]: el valor se usa
+        tal cual.
+      - Hasta [ancla/EXCLUSION_SUELO, ancla*EXCLUSION_TECHO]: se recorta al
+        borde de la banda. El método discrepa, pero su dirección (caro /
+        barato) sigue siendo información real que vale la pena conservar.
+      - Más allá de eso: se EXCLUYE (no se recorta). Ahí el método no está
+        discrepando, ha fallado, y forzarlo al borde solo arrastraría la
+        media con un número que ya no refleja el cálculo del método.
+
+    Asimétrica porque el consenso del sell-side corre de media un 10-20%
+    por encima del precio en el que termina cotizando el valor: ser más
+    permisivo por debajo que por encima evita importar ese sesgo alcista
+    al plan de DCA.
+    """
+    if not es_valido(ancla) or ancla <= 0:
+        return dict(valores), {"recortes": {}, "excluidos": {}}
+
+    ancla = float(ancla)
+    suelo, techo = ancla / BANDA_SUELO, ancla * BANDA_TECHO
+    fuera_min, fuera_max = ancla / EXCLUSION_SUELO, ancla * EXCLUSION_TECHO
+
+    ajustados = dict(valores)
+    recortes: dict[str, tuple[str, float, float]] = {}
+    excluidos: dict[str, float] = {}
+    for clave, v in valores.items():
+        if not es_valido(v):
+            continue
+        v = float(v)
+        if v < fuera_min or v > fuera_max:
+            ajustados[clave] = None
+            excluidos[clave] = v
+        elif v < suelo:
+            ajustados[clave] = suelo
+            recortes[clave] = ("suelo", v, suelo)
+        elif v > techo:
+            ajustados[clave] = techo
+            recortes[clave] = ("techo", v, techo)
+    return ajustados, {"recortes": recortes, "excluidos": excluidos}
+
+
 def calcular_fair_value(paquete: dict) -> dict:
-    """Combina DCF, múltiplos, EV/EBITDA sectorial y consenso en un único
-    valor objetivo."""
+    """Combina DCF, múltiplos, EV/EBITDA sectorial, PEG y consenso en un
+    único valor objetivo, pasando primero por la banda de cordura."""
     dcf, det_dcf = valorar_dcf(paquete)
     mult, det_mult = valorar_multiplos(paquete)
     ev_ebitda, det_ev_ebitda = valorar_ev_ebitda(paquete)
@@ -371,27 +655,53 @@ def calcular_fair_value(paquete: dict) -> dict:
     objetivo, multiplicador = _consenso_ponderable(paquete.get("consenso", {}))
     n_analistas = paquete.get("consenso", {}).get("n_analistas")
 
+    valores_metodos = {"dcf": dcf, "multiplos": mult, "ev_ebitda": ev_ebitda, "peg": peg_val}
+
+    if es_valido(objetivo) and es_valido(n_analistas) and float(n_analistas) >= BANDA_MIN_ANALISTAS:
+        ancla = objetivo
+    else:
+        disponibles = [v for v in valores_metodos.values() if es_valido(v)]
+        ancla = statistics.median(disponibles) if disponibles else None
+
+    valores_ajustados, info_banda = _aplicar_banda_cordura(valores_metodos, ancla)
+
     pesos = dict(PESOS_FAIR_VALUE)
     pesos["consenso"] = pesos["consenso"] * multiplicador
-    resultado = ponderar(
-        {
-            "dcf": dcf,
-            "multiplos": mult,
-            "ev_ebitda": ev_ebitda,
-            "peg": peg_val,
-            "consenso": objetivo,
-        },
-        pesos,
-    )
+    resultado = ponderar({**valores_ajustados, "consenso": objetivo}, pesos)
 
     precio = paquete.get("precio")
     fv = resultado["valor"]
     upside = ((fv / precio) - 1) * 100 if es_valido(fv) and es_valido(precio) and precio > 0 else None
 
+    # Anotar en el detalle de cada método si la banda de cordura intervino,
+    # para que la interfaz pueda mostrarlo junto a la fórmula.
+    for clave, det in (
+        ("dcf", det_dcf), ("multiplos", det_mult),
+        ("ev_ebitda", det_ev_ebitda), ("peg", det_peg),
+    ):
+        if clave in info_banda["excluidos"]:
+            original = info_banda["excluidos"][clave]
+            det["banda_cordura"] = {"accion": "excluido", "valor_original": original, "ancla": ancla}
+            det["notas"].append(
+                f"Banda de cordura: {original:,.2f} $ se desvía demasiado del consenso/mediana "
+                f"({ancla:,.2f} $) para ser fiable; método excluido de esta valoración."
+            )
+        elif clave in info_banda["recortes"]:
+            borde, original, recortado = info_banda["recortes"][clave]
+            det["banda_cordura"] = {
+                "accion": "recortado", "borde": borde,
+                "valor_original": original, "valor_recortado": recortado, "ancla": ancla,
+            }
+            det["notas"].append(
+                f"Banda de cordura: recortado de {original:,.2f} $ a {recortado:,.2f} $ "
+                f"({'techo' if borde == 'techo' else 'suelo'} de la banda respecto al consenso/mediana)."
+            )
+
     return {
         "fair_value": fv,
         "upside_pct": upside,
         "peso_consenso_doble": multiplicador == 2.0,
+        "ancla_banda_cordura": ancla,
         "componentes": {
             "DCF": {"valor": dcf, "detalle": det_dcf},
             "Múltiplos": {"valor": mult, "detalle": det_mult},

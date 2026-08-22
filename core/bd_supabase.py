@@ -23,6 +23,7 @@ T_ANALISIS = "analisis_historico"
 T_CARTERA = "cartera_posiciones"
 T_PAPER = "paper_trading_posiciones"
 T_NIVELES = "paper_trading_niveles"
+T_TRADUCCIONES = "descripciones_traducidas"
 
 USUARIO_DEFECTO = "local"
 
@@ -280,6 +281,49 @@ def cerrar_paper_trade(posicion_id, precio_cierre: float, motivo: str = "manual"
                 "cerrada_en": _ahora(),
             }
         ).eq("id", posicion_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+# ----------------------------------------------- descripciones traducidas --
+def obtener_descripcion_traducida(ticker: str, hash_original: str) -> str | None:
+    """Devuelve la traducción cacheada si existe Y el texto en inglés no ha
+    cambiado desde que se tradujo (comparando `hash_original`). Si yfinance
+    actualiza la descripción, el hash difiere y se trata como caché vacía
+    para forzar una traducción nueva en vez de servir una obsoleta."""
+    sb = cliente()
+    if sb is None:
+        return None
+    try:
+        r = sb.table(T_TRADUCCIONES).select("texto_traducido, hash_original").eq(
+            "ticker", ticker.upper()
+        ).limit(1).execute()
+        filas = r.data or []
+        if not filas or filas[0].get("hash_original") != hash_original:
+            return None
+        return filas[0].get("texto_traducido")
+    except Exception:
+        return None
+
+
+def guardar_descripcion_traducida(
+    ticker: str, hash_original: str, texto_original: str, texto_traducido: str
+) -> bool:
+    sb = cliente()
+    if sb is None:
+        return False
+    try:
+        sb.table(T_TRADUCCIONES).upsert(
+            {
+                "ticker": ticker.upper(),
+                "hash_original": hash_original,
+                "texto_original": texto_original,
+                "texto_traducido": texto_traducido,
+                "traducido_en": _ahora(),
+            },
+            on_conflict="ticker",
+        ).execute()
         return True
     except Exception:
         return False

@@ -214,7 +214,17 @@ def veredicto_final(calidad: dict, valoracion: dict, timing: dict, plan: dict) -
     if es_valido(punt_timing):
         motivos.append(f"Timing {punt_timing:.0f}/100")
     if plan.get("disponible"):
-        motivos.append("Precio en nivel 1" if plan.get("ejecutable") else "Aún sobre el nivel 1")
+        if plan.get("ejecutable"):
+            motivos.append("Precio en nivel 1")
+        else:
+            precio_ref = plan.get("precio_referencia")
+            entradas = plan.get("entradas") or []
+            nivel_1 = entradas[0]["precio"] if entradas else None
+            if es_valido(precio_ref) and es_valido(nivel_1) and precio_ref > 0:
+                falta_pct = (precio_ref - nivel_1) / precio_ref * 100
+                motivos.append(f"A {falta_pct:.1f}".replace(".", ",") + "% del Nivel de Entrada 1")
+            else:
+                motivos.append("Aún sobre el nivel 1")
 
     buena_calidad = es_valido(salud) and salud >= 60
     calidad_alta = es_valido(salud) and salud >= 75
