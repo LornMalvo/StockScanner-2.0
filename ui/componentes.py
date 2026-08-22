@@ -123,6 +123,22 @@ def badge(texto: str, color: str) -> None:
     )
 
 
+def metrica_pastilla(etiqueta: str, texto_pastilla: str, color: str) -> None:
+    """Fila etiqueta/valor donde el valor se muestra como pastilla de color
+    (mismo estilo que `badge`, pero alineado en la rejilla de métricas junto
+    a su etiqueta). Pensado para estados categóricos con pocos valores
+    posibles (p. ej. consenso de analistas: compra fuerte/compra/mantener/
+    venta/venta fuerte), donde el color comunica la lectura de un vistazo."""
+    if texto_pastilla == TEXTO_ND:
+        metrica(etiqueta, texto_pastilla)
+        return
+    st.markdown(
+        f'<div class="ss-metrica"><span>{html.escape(etiqueta)}</span>'
+        f'<span class="ss-badge" style="background:{color}">{html.escape(texto_pastilla)}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def nota(puntuacion: float | None, color: str, sufijo: str = "/100") -> None:
     """Nota numérica grande + barra de progreso."""
     if not es_valido(puntuacion):
