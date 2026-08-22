@@ -84,6 +84,21 @@ create table if not exists paper_trading_niveles (
 );
 create index if not exists idx_niveles_posicion on paper_trading_niveles (posicion_id);
 
+-- ------------------------------------------- descripciones traducidas ---
+-- Caché de la traducción al español de `longBusinessSummary` (yfinance,
+-- siempre en inglés). No lleva usuario_id: la traducción no depende del
+-- usuario, es la misma para todos y se comparte. `hash_original` es un
+-- hash corto del texto en inglés: si yfinance actualiza la descripción
+-- (cambio de negocio, adquisición, etc.), el hash deja de coincidir y se
+-- vuelve a traducir en vez de servir una traducción obsoleta desde caché.
+create table if not exists descripciones_traducidas (
+    ticker          text        not null primary key,
+    hash_original   text        not null,
+    texto_original  text        not null,
+    texto_traducido text        not null,
+    traducido_en    timestamptz not null default now()
+);
+
 -- ------------------------------------------------------------------ RLS --
 -- Con la clave anon y un solo usuario ('local') basta con políticas abiertas.
 -- Si más adelante se activa Supabase Auth, sustituir 'local' por auth.uid()::text.
@@ -92,9 +107,11 @@ alter table analisis_historico        enable row level security;
 alter table cartera_posiciones        enable row level security;
 alter table paper_trading_posiciones  enable row level security;
 alter table paper_trading_niveles     enable row level security;
+alter table descripciones_traducidas  enable row level security;
 
 create policy "acceso_local_favoritos"  on favoritos                for all using (true) with check (true);
 create policy "acceso_local_analisis"   on analisis_historico       for all using (true) with check (true);
 create policy "acceso_local_cartera"    on cartera_posiciones       for all using (true) with check (true);
 create policy "acceso_local_paper"      on paper_trading_posiciones for all using (true) with check (true);
 create policy "acceso_local_niveles"    on paper_trading_niveles    for all using (true) with check (true);
+create policy "acceso_local_traducciones" on descripciones_traducidas for all using (true) with check (true);
