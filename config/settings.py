@@ -62,12 +62,24 @@ BANDAS_VALORACION = [
 ]
 
 # ------------------------------------------------- pesos de valoración FV ----
+# Recalibrado tras simulación sobre cesta de 29 tickers multisector (ver
+# ESTADO_PROYECTO.md). El DCF baja de 0,25 a 0,10: en la calibración fue,
+# con diferencia, el método más alejado del consenso de analistas (mediana
+# de desviación ~50-60% frente a ~25-35% de multiplos/ev_ebitda/peg), y su
+# desviación media no mejoró pese a corregir la metodología (FCFF, WACC
+# ponderado real, deuda contada una sola vez) — el problema no es un bug de
+# cálculo sino la naturaleza del método: cualquier tasa de descuento
+# defendible topa el múltiplo de salida muy por debajo de lo que paga hoy
+# el mercado en sectores de alto crecimiento (ver nota en valorar_dcf).
+# No se retira del todo porque en varios tickers (los de FCF estable y
+# deuda normal) seguía siendo la lectura más precisa de los cuatro. El resto
+# de pesos se reescala proporcionalmente para seguir sumando 1,0.
 PESOS_FAIR_VALUE = {
-    "dcf": 0.25,
-    "multiplos": 0.15,
-    "ev_ebitda": 0.20,
-    "peg": 0.15,
-    "consenso": 0.25,
+    "dcf": 0.10,
+    "multiplos": 0.17,
+    "ev_ebitda": 0.22,
+    "peg": 0.17,
+    "consenso": 0.34,
 }
 # El consenso duplica peso si lo cubren >= 10 analistas. Se retiró el
 # requisito adicional de unanimidad (100% de recomendaciones de compra):
@@ -92,8 +104,46 @@ DCF_CRECIMIENTO_MIN = -0.05
 # riesgo de mercado.
 DCF_TASA_LIBRE_RIESGO = 0.042
 DCF_PRIMA_MERCADO = 0.055
-DCF_WACC_MIN = 0.075
+DCF_WACC_MIN = 0.075   # suelo de Ke (coste de recursos propios, CAPM)
 DCF_WACC_MAX = 0.14
+
+# WACC PONDERADO real (Ke y Kd por estructura de capital), no solo Ke. El
+# suelo/techo de abajo acotan el WACC ya ponderado, más laxos que los de Ke
+# porque una empresa con deuda barata puede defender un WACC más bajo que
+# su Ke en solitario (caso AMT: Kd real 3,4%).
+DCF_WACC_MIN_PONDERADO = 0.055
+DCF_WACC_MAX_PONDERADO = 0.14
+
+# Coste de deuda (Kd). Se calcula como intereses/deuda cuando ambos datos
+# son fiables; el suelo solo actúa como red de seguridad ante datos rotos
+# (intereses ~0 con deuda grande), nunca sustituye el dato real — un suelo
+# forzado sistemáticamente arregla un ticker (VZ) y rompe otro con deuda
+# genuinamente barata (AMT, REIT con Kd real 3,4%).
+DCF_KD_MIN = 0.047   # Rf + 0,5%: un Kd por debajo del bono sin riesgo no es defendible
+DCF_KD_MAX = 0.12
+
+# Tope al múltiplo de salida implícito del valor terminal (Gordon growth).
+# Con WACC bajo y g terminal 2,5%, Gordon puede implicar múltiplos de 30x+
+# el FCF del año 5 (caso VZ: WACC 5,5% -> VT en 33x -> DCF a +242% del
+# consenso). El tope ataca el modo de fallo directamente.
+DCF_MULTIPLO_TERMINAL_MAX = 20.0
+
+# Guardarraíl de deuda contaminada por financiera cautiva (caso Ford: Ford
+# Credit infla `totalDebt` muy por encima de la estructura de capital del
+# negocio industrial). Si deuda/capitalización bursátil supera este umbral
+# en un sector que NO es estructuralmente apalancado, el dato no es fiable
+# y el DCF se excluye en vez de devolver un número inventado.
+DCF_DEUDA_MKTCAP_MAX = 2.0
+DCF_SECTORES_APALANCADOS = {"Financial Services", "Real Estate", "Utilities"}
+
+# Tipo impositivo por defecto cuando `effectiveTaxRate` no es fiable
+# (ausente o fuera de [0, 45%]), usado para desapalancar el FCF a FCFF.
+DCF_TIPO_IMPOSITIVO_DEFECTO = 0.21
+
+# Umbral de anomalía para la normalización de la base de FCF: por encima de
+# esta desviación sobre la mediana de 3 años en una serie oscilante, se usa
+# la mediana en vez del último ejercicio.
+DCF_ANOMALIA_FCF = 0.35
 
 # Techo de crecimiento diferenciado por sector: sectores de crecimiento
 # estructural alto (Tecnología, Salud) pueden sostener tasas más altas que
@@ -121,7 +171,14 @@ DCF_CRECIMIENTO_MAX_SECTOR = {
 # crecimiento, valores de 1,8-1,9 disparan el PER justo a niveles absurdos
 # (NBIX: 1,9 x 17,3 = PER 33x -> ~390$, casi el doble del consenso).
 PEG_OBJETIVO = 1.0
-PEG_CRECIMIENTO_MIN = 0.05  # por debajo, el método no aporta señal fiable
+# Por debajo de este crecimiento el método se EXCLUYE (antes se pinzaba a
+# 5%, lo que con PEG_OBJETIVO=1.0 implicaba un PER justo mínimo de 5x —
+# indefendible para KO, PG, SO, AMT. El PEG es una herramienta para
+# empresas en crecimiento; forzarlo en una utility que crece al 4% es un
+# error de categoría, no de calibración. En la calibración fue el método
+# con más desviaciones extremas del motor (12 de 29 tickers >60% de
+# desviación); tras el cambio a exclusión bajó a 2 de 29.
+PEG_CRECIMIENTO_MIN = 0.10
 PEG_CRECIMIENTO_MAX = 0.25  # techo para no extrapolar crecimientos explosivos
 
 # --------------------------------------------- pesos de calidad (Bloque 4) ----
@@ -214,6 +271,41 @@ SENIALES_TIMING = [
     (0, "NO ES MOMENTO", C_ROJO),
 ]
 
+# Traducción y color del consenso de analistas (`info["recommendationKey"]`
+# de yfinance). Se muestra como pastilla de color en el Bloque 5 (Timing).
+# "none" es el valor que devuelve yfinance cuando no hay recomendación.
+CONSENSO_ANALISTAS_ES = {
+    "strong_buy": ("Compra fuerte", C_VERDE_OSCURO),
+    "buy": ("Compra", C_VERDE),
+    "hold": ("Mantener", C_AMBAR),
+    "sell": ("Venta", C_NARANJA),
+    "strong_sell": ("Venta fuerte", C_ROJO_OSCURO),
+    "none": ("Sin recomendación", C_TEXTO_TENUE),
+}
+
+# ------------------------------------------------------ banda de cordura ----
+# Tras calcular los 4 métodos, cada uno se compara con un ancla (el
+# consenso de analistas si hay >= BANDA_MIN_ANALISTAS cobertura; si no, la
+# mediana de los métodos disponibles). Dos niveles, ASIMÉTRICOS:
+#   - Dentro de [ancla/BANDA_SUELO, ancla*BANDA_TECHO]: el método se usa
+#     tal cual.
+#   - Hasta [ancla/EXCLUSION_SUELO, ancla*EXCLUSION_TECHO]: se RECORTA al
+#     borde de la banda (el método discrepa, pero su dirección sigue
+#     siendo información real).
+#   - Más allá: se EXCLUYE (no se recorta). Ahí el método no está
+#     discrepando, ha fallado, y forzarlo al borde solo arrastraría la
+#     media con un número inventado.
+# Asimétrica porque el consenso del sell-side corre de media un 10-20% por
+# encima del precio en el que termina cotizando el valor (los analistas
+# rara vez publican objetivos por debajo del precio actual): ser más
+# permisivo por debajo que por encima evita importar ese sesgo alcista al
+# plan de DCA, que preferimos que se equivoque por el lado conservador.
+BANDA_SUELO = 2.5
+BANDA_TECHO = 1.6
+EXCLUSION_SUELO = 4.0
+EXCLUSION_TECHO = 2.5
+BANDA_MIN_ANALISTAS = 5
+
 # ------------------------------------------------------- plan DCA (Bloque 6) --
 DCA_SEPARACION_MIN_ENTRADAS = 0.10  # 10% mínimo entre niveles de entrada
 DCA_PESOS_ENTRADA = [0.40, 0.35, 0.25]
@@ -236,6 +328,19 @@ PER_MEDIANO_SECTOR = {
     "Utilities": 18.0,
     "Real Estate": 30.0,
 }
+
+# El PER histórico propio no puede superar este múltiplo del PER sectorial
+# de referencia. Antes el filtro era absoluto (0 < PER < 60), lo que dejaba
+# pasar valores como un PER histórico de 44,1x en un sector con mediana
+# ~24x. Relativo al sector, el techo se ajusta automáticamente a cada
+# industria en vez de usar el mismo límite duro para todas.
+PER_HIST_TECHO_VS_SECTOR = 1.3
+
+# Peso del PER sectorial frente al histórico propio al combinarlos (el
+# resto, 1 - este valor, va al histórico). El histórico es el que arrastra
+# outliers de ejercicios puntuales; ponderar más el sectorial reduce esa
+# distorsión sin descartar la referencia propia.
+PESO_PER_SECTOR = 0.60
 MARGEN_NETO_MEDIANO_SECTOR = {
     "Technology": 0.18,
     "Communication Services": 0.13,
@@ -307,6 +412,64 @@ EV_EBITDA_MEDIANO_SECTOR = {
     "Utilities": 10.0,
     "Real Estate": 16.0,
 }
+
+# Múltiplo EV/EBITDA por INDUSTRIA (más específico que el sector, usado con
+# prioridad sobre él con fallback a EV_EBITDA_MEDIANO_SECTOR). Nace del caso
+# Healthcare: un único múltiplo de 14x no distingue biotecnología en
+# crecimiento (Biotechnology, ~40 años) de una aseguradora médica (Healthcare
+# Plans, 7-9x reales) o una farmacéutica madura. Poblado solo donde la
+# desviación observada en la calibración era material; el resto de
+# industrias sigue cayendo al múltiplo de sector.
+EV_EBITDA_MEDIANO_INDUSTRIA = {
+    "Drug Manufacturers - General": 15.0,
+    "Drug Manufacturers - Specialty & Generic": 10.0,
+    "Healthcare Plans": 11.0,
+    "Medical Devices": 17.0,
+    "Medical Instruments & Supplies": 22.0,
+    "Diagnostics & Research": 16.0,
+    "Medical Distribution": 9.0,
+    "Healthcare Providers & Services": 9.0,
+    "Semiconductors": 18.0,
+    "Semiconductor Equipment & Materials": 17.0,
+    "Software - Infrastructure": 22.0,
+    "Software - Application": 17.0,
+    "Information Technology Services": 13.0,
+    "Consumer Electronics": 18.0,
+    "Computer Hardware": 14.0,
+    "REIT - Specialty": 22.0,
+    "REIT - Industrial": 21.0,
+    "REIT - Retail": 17.0,
+    "REIT - Residential": 20.0,
+    "REIT - Healthcare Facilities": 18.0,
+    "REIT - Office": 13.0,
+    "Internet Content & Information": 14.0,
+    "Telecom Services": 7.0,
+    "Entertainment": 12.0,
+    "Internet Retail": 16.0,
+    "Auto Manufacturers": 8.0,
+    "Home Improvement Retail": 14.0,
+    "Beverages - Non-Alcoholic": 18.0,
+    "Household & Personal Products": 15.0,
+    "Discount Stores": 14.0,
+    "Credit Services": 20.0,
+    "Banks - Diversified": 11.0,
+    "Railroads": 13.0,
+    "Farm & Heavy Construction Machinery": 12.0,
+    "Aerospace & Defense": 15.0,
+    "Oil & Gas Integrated": 6.0,
+    "Oil & Gas Equipment & Services": 7.0,
+    "Specialty Chemicals": 14.0,
+    "Steel": 7.0,
+    "Utilities - Regulated Electric": 12.0,
+}
+
+# Industrias donde EV/EBITDA se EXCLUYE directamente (no se usa ni siquiera
+# como fallback a sector). Caso Biotechnology: se probaron múltiplos de
+# 20x y 32x y ninguno acercó NBIX al consenso -- el problema no es el
+# múltiplo, es que el EBITDA de una biotech en rampa comercial (o aún sin
+# ingresos de producto) no es una magnitud estable a la que aplicar un
+# múltiplo sectorial.
+EV_EBITDA_INDUSTRIAS_EXCLUIDAS = {"Biotechnology"}
 PS_MEDIANO_SECTOR = {
     "Technology": 6.0,
     "Communication Services": 3.0,
