@@ -11,6 +11,7 @@ from config.settings import (
     C_ROJO,
     C_TEXTO_TENUE,
     C_VERDE,
+    CONSENSO_ANALISTAS_ES,
     CURRENT_RATIO_MEDIANO_SECTOR,
     C_AMBAR,
     C_VERDE_OSCURO,
@@ -31,7 +32,7 @@ from config.settings import (
     ROIC_MEDIANO_SECTOR,
     TEXTO_ND,
 )
-from core import alertas_telegram, bd_supabase, datos_api, indicadores, plan_dca, timing, valoracion
+from core import alertas_telegram, bd_supabase, datos_api, indicadores, plan_dca, timing, traduccion, valoracion
 from ui import componentes as C
 from utils.formato import (
     dias_hasta,
@@ -208,7 +209,12 @@ def _bloque_2_descripcion(a: dict) -> None:
 
     descripcion = p.get("descripcion")
     if descripcion:
-        st.caption(descripcion[:520] + ("…" if len(descripcion) > 520 else ""))
+        recorte_previo = descripcion[:600]  # margen sobre los 520 mostrados; ahorra tokens de traducción
+        texto, es_traduccion = traduccion.traducir_descripcion(p["ticker"], recorte_previo)
+        texto = texto or recorte_previo
+        st.caption(texto[:520] + ("…" if len(texto) > 520 or len(descripcion) > 600 else ""))
+        if not es_traduccion:
+            st.caption("Descripción en inglés (traducción no disponible).")
     else:
         st.markdown(f'<div class="ss-nd">{TEXTO_ND}</div>', unsafe_allow_html=True)
         _diagnostico_info(p)
@@ -288,6 +294,7 @@ def _bloque_3_grafico(a: dict) -> None:
     with col_f:
         st.markdown("**Fundamentales**")
         C.metrica("Capitalización", fmt_compacto_usd_eur(info.get("marketCap"), fx))
+        C.metrica("Nº de acciones en circulación", fmt_compacto(info.get("sharesOutstanding")))
         _bloque_valoracion(info, sector)
         _bloque_rentabilidad(info, a["calidad"]["lecturas"], sector)
         _bloque_balance_caja(info, fx, sector)
@@ -298,10 +305,10 @@ def _bloque_3_grafico(a: dict) -> None:
         C.metrica("Señal MACD", fmt_num(t.get("macd_senal"), 3))
         C.metrica("ADX (14)", fmt_num(t.get("adx"), 1))
         C.metrica("ATR (14)", fmt_num(t.get("atr"), 2))
-        _fila_distancia("Media móvil 50", t.get("mm50"), precio)
-        _fila_distancia("Media móvil 200", t.get("mm200"), precio)
-        _fila_distancia("Máximo 52 semanas", t.get("max_52s"), precio)
-        _fila_distancia("Mínimo 52 semanas", t.get("min_52s"), precio)
+        _fila_distancia("Media móvil 50", t.get("mm50"), precio, fx)
+        _fila_distancia("Media móvil 200", t.get("mm200"), precio, fx)
+        _fila_distancia("Máximo 52 semanas", t.get("max_52s"), precio, fx)
+        _fila_distancia("Mínimo 52 semanas", t.get("min_52s"), precio, fx)
         C.metrica("Variación 1 año", fmt_pct(t.get("variacion_1a_pct")))
         C.metrica("Volumen medio 3 meses", fmt_compacto(t.get("volumen_medio_3m")))
 
@@ -317,14 +324,16 @@ def _bloque_3_grafico(a: dict) -> None:
         )
 
 
-def _fila_distancia(etiqueta: str, valor, precio) -> None:
+def _fila_distancia(etiqueta: str, valor, precio, fx=None) -> None:
     """Métrica técnica junto a su distancia en % respecto al precio actual.
     Solo la distancia lleva color (verde si es positiva, rojo si es negativa);
-    el valor de la media/máximo/mínimo se muestra en el estilo normal."""
+    el valor de la media/máximo/mínimo se muestra en el estilo normal, en
+    USD con su conversión a EUR entre paréntesis (regla del proyecto para
+    todo importe monetario)."""
     if not es_valido(valor):
         C.metrica(etiqueta, TEXTO_ND)
         return
-    texto = fmt_num(valor)
+    texto = fmt_usd_eur(valor, fx)
     if es_valido(precio) and float(valor) != 0:
         distancia = (float(precio) / float(valor) - 1) * 100
         color = C_VERDE if distancia >= 0 else C_ROJO
@@ -650,7 +659,9 @@ def _bloque_5_timing(a: dict) -> None:
         st.caption(tm["nota_salud"])
 
     C.metrica("Margen de seguridad", fmt_pct(tm.get("margen_seguridad_pct")))
-    C.metrica("Consenso de analistas", a["paquete"].get("consenso", {}).get("recomendacion") or TEXTO_ND)
+    clave_consenso = (a["paquete"].get("consenso", {}).get("recomendacion") or "").lower()
+    texto_consenso, color_consenso = CONSENSO_ANALISTAS_ES.get(clave_consenso, (TEXTO_ND, "#94a3b8"))
+    C.metrica_pastilla("Consenso de analistas", texto_consenso, color_consenso)
     n_analistas = a["paquete"].get("consenso", {}).get("n_analistas")
     C.metrica("Analistas que cubren", fmt_num(n_analistas, 0))
 
