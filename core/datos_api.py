@@ -31,23 +31,6 @@ REINTENTOS_YAHOO = 3
 TTL_FALLO = 120  # un fallo se recuerda 2 min, no una hora
 
 
-@st.cache_resource(show_spinner=False)
-def _sesion_yfinance():
-    """Sesión con huella de navegador real para las peticiones a Yahoo Finance.
-
-    Yahoo bloquea o limita muy agresivamente las peticiones que no parecen
-    venir de un navegador. Se usa `curl_cffi` con `impersonate="chrome"` para
-    replicar las cabeceras TLS/HTTP de un Chrome real; si el paquete no está
-    instalado se cae de vuelta a una sesión de requests normal.
-    """
-    try:
-        from curl_cffi import requests as curl_requests
-
-        return curl_requests.Session(impersonate="chrome")
-    except ImportError:
-        return requests.Session()
-
-
 @st.cache_resource(show_spinner=False, max_entries=64)
 def _ticker(simbolo: str) -> yf.Ticker:
     """Objeto Ticker reutilizado entre llamadas y entre reruns.
@@ -57,8 +40,20 @@ def _ticker(simbolo: str) -> yf.Ticker:
     repetir peticiones. Crear un `yf.Ticker` nuevo en cada llamada —como se
     hacía antes— tiraba esa caché interna a la basura y multiplicaba las
     peticiones a Yahoo.
+
+    NO se le pasa una sesión `curl_cffi` propia (se hacía antes, vía una
+    función `_sesion_yfinance()` ya retirada). Era necesario en versiones
+    antiguas de yfinance (0.2.x) para imitar la huella TLS de un navegador
+    real y esquivar el bloqueo de Yahoo. Desde que yfinance saltó a la
+    serie 1.x, la librería gestiona su propia sesión `curl_cffi` con
+    impersonación de Chrome de forma interna, y pasarle una sesión propia
+    hace que las peticiones devuelvan respuestas vacías sin lanzar
+    excepción (no un cookie/crumb caducado: por eso ni purgar la sesión en
+    memoria ni reiniciar la app lo arreglaban). Solución oficial de los
+    mantenedores de yfinance: no pasar `session=`, dejar que la gestione
+    yfinance. Ver github.com/ranaroussi/yfinance issue #2496.
     """
-    return yf.Ticker(simbolo, session=_sesion_yfinance())
+    return yf.Ticker(simbolo)
 
 
 @st.cache_resource(show_spinner=False)
@@ -152,12 +147,12 @@ def obtener_info(ticker: str) -> dict:
 
     Se intenta primero `get_info()` y, si llega vacío, la propiedad `.info`.
     Si ambas fallan *sin lanzar excepción* (respuesta 200 pero sin campos de
-    identidad), es la firma típica de un crumb/cookie de Yahoo caducado en la
-    sesión compartida (`_sesion_yfinance`, cacheada con `st.cache_resource` y
-    reutilizada entre tickers y usuarios). Ese caso no lo cubre `_pedir()`
-    (que solo reintenta ante excepciones de rate-limit), así que aquí se
-    purga la sesión y el `Ticker` cacheados y se reintenta una vez completa
-    con credenciales frescas antes de rendirse.
+    identidad) puede deberse a un cookie/crumb interno de yfinance caducado
+    en el `Ticker` cacheado (`_ticker`, vía `st.cache_resource`, reutilizado
+    entre tickers y usuarios). Ese caso no lo cubre `_pedir()` (que solo
+    reintenta ante excepciones de rate-limit), así que aquí se purga el
+    `Ticker` cacheado y se reintenta una vez completa con credenciales
+    frescas antes de rendirse.
 
     Si ambas fallan se devuelve `_ss_error` con el motivo concreto, que la
     interfaz muestra en lugar de un mudo "dato no disponible".
@@ -188,9 +183,8 @@ def obtener_info(ticker: str) -> dict:
             )
 
         if intento_sesion == 0 and vacio_sin_excepcion:
-            _sesion_yfinance.clear()
             _ticker.clear()
-            errores.append("Sesión de Yahoo purgada por respuesta vacía; reintentando con sesión nueva")
+            errores.append("Ticker de yfinance purgado por respuesta vacía; reintentando con instancia nueva")
         else:
             break
 
