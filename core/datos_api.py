@@ -17,7 +17,14 @@ import requests
 import streamlit as st
 import yfinance as yf
 
-from config.settings import TTL_FUNDAMENTALES, TTL_FX, TTL_NOTICIAS, TTL_PRECIO
+from config.settings import (
+    ETF_MERCADO,
+    ETF_SECTORIAL,
+    TTL_FUNDAMENTALES,
+    TTL_FX,
+    TTL_NOTICIAS,
+    TTL_PRECIO,
+)
 from utils.formato import es_valido, num, primero_valido
 
 SEC_UA = "StockScanner/1.0 (contacto: tu-email-real@dominio.com)"
@@ -204,6 +211,26 @@ def obtener_historico(ticker: str, periodo: str = "5y", intervalo: str = "1d") -
     df.index = pd.to_datetime(df.index).tz_localize(None)
     return df
 
+
+
+@st.cache_data(ttl=TTL_PRECIO, show_spinner=False)
+def obtener_referencia_mercado(sector: str | None) -> dict:
+    """Histórico del ETF sectorial de referencia (o del mercado como respaldo).
+
+    Sirve para medir la fuerza relativa del valor: si cae solo o cae con todo
+    su sector. Coste en peticiones: UNA llamada más por análisis, pero la
+    caché va indexada por símbolo del ETF, así que todos los tickers de un
+    mismo sector analizados dentro del TTL comparten la misma descarga (en el
+    Rastreador, un lote de 10 tecnológicas gasta una sola petición extra en
+    total, no diez).
+    """
+    simbolo = ETF_SECTORIAL.get(sector or "", ETF_MERCADO)
+    historico = obtener_historico(simbolo, periodo="2y")
+    return {
+        "simbolo": simbolo,
+        "nombre": ("mercado" if simbolo == ETF_MERCADO else f"sector {sector}"),
+        "historico": historico,
+    }
 
 
 @st.cache_data(ttl=TTL_PRECIO, show_spinner=False)

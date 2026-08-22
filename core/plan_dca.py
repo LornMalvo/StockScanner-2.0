@@ -88,6 +88,34 @@ def _candidatos_resistencia(precio: float, tec: dict, fair_value: float | None) 
     return c
 
 
+def zonas_confluencia_soporte(precio: float, tecnico: dict) -> list[dict]:
+    """Zonas de soporte agrupadas por confluencia, de la más alta a la más baja.
+
+    PUNTO DE ENTRADA ÚNICO al motor de confluencia para cualquier otro módulo
+    (hoy lo consume `core/timing.py` para puntuar la proximidad del precio a
+    una zona fuerte). Deliberadamente devuelve las zonas EN BRUTO, antes de
+    `_separar()`: la selección de los 3 niveles del plan aplica filtros de
+    separación mínima que descartan zonas perfectamente válidas para el
+    timing —una zona a un 3% del precio no sirve como "entrada 2" pero es
+    justo lo que el timing quiere detectar—.
+
+    IMPORTANTE para el rediseño pendiente del motor DCA (clustering por ATR,
+    separación adaptativa, orden por peso, Volume Profile como fuente nueva
+    de candidatos): mientras ese rediseño se haga dentro de `_agrupar()` y
+    `_candidatos_soporte()`, el timing hereda automáticamente los cambios sin
+    tocar una línea de `core/timing.py`. Si el rediseño introduce una función
+    de agrupación distinta, hay que redirigir ESTA función a la nueva, y solo
+    esta.
+    """
+    if not es_valido(precio) or precio <= 0:
+        return []
+    return sorted(
+        _agrupar(_candidatos_soporte(float(precio), tecnico)),
+        key=lambda z: z["precio"],
+        reverse=True,
+    )
+
+
 def _separar(zonas: list[dict], precio_ref: float, n: int, separacion: float, ascendente: bool) -> list[dict]:
     """Selecciona n zonas respetando la separación mínima entre ellas."""
     ordenadas = sorted(zonas, key=lambda z: z["precio"], reverse=not ascendente)
@@ -112,7 +140,7 @@ def construir_plan(paquete: dict, tecnico: dict, valoracion: dict) -> dict:
     fair_value = valoracion.get("fair_value")
 
     # ------------------------------------------------------------ entradas --
-    zonas_entrada = _agrupar(_candidatos_soporte(precio, tecnico))
+    zonas_entrada = zonas_confluencia_soporte(precio, tecnico)
     entradas = _separar(zonas_entrada, precio, 3, DCA_SEPARACION_MIN_ENTRADAS, ascendente=False)
 
     # Si la confluencia no da los 3 niveles, se completan por escalones fijos.

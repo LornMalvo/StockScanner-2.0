@@ -10,6 +10,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from config.settings import FUERZA_RELATIVA_SESIONES, VOLUMEN_SESIONES_RECIENTES
+
 
 # ------------------------------------------------------------- básicos ------
 def sma(serie: pd.Series, ventana: int) -> pd.Series:
@@ -47,7 +49,14 @@ def atr(df: pd.DataFrame, ventana: int = 14) -> pd.Series:
     return tr.ewm(alpha=1 / ventana, adjust=False).mean()
 
 
-def adx(df: pd.DataFrame, ventana: int = 14) -> pd.Series:
+def adx(df: pd.DataFrame, ventana: int = 14) -> pd.DataFrame:
+    """ADX junto con sus dos direccionales (+DI y −DI).
+
+    Devuelve el DataFrame completo y no solo la línea ADX porque el ADX mide
+    FUERZA de tendencia, no dirección: sin +DI/−DI, un ADX de 30 en plena
+    caída es indistinguible de un ADX de 30 en plena subida. Quien puntúe el
+    ADX necesita las tres series para saber hacia dónde apunta esa fuerza.
+    """
     alto, bajo = df["High"], df["Low"]
     up = alto.diff()
     down = -bajo.diff()
@@ -61,7 +70,13 @@ def adx(df: pd.DataFrame, ventana: int = 14) -> pd.Series:
         alpha=1 / ventana, adjust=False
     ).mean() / tr.replace(0, np.nan)
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
-    return dx.ewm(alpha=1 / ventana, adjust=False).mean()
+    return pd.DataFrame(
+        {
+            "adx": dx.ewm(alpha=1 / ventana, adjust=False).mean(),
+            "di_mas": plus_di,
+            "di_menos": minus_di,
+        }
+    )
 
 
 def obv(df: pd.DataFrame) -> pd.Series:
@@ -120,6 +135,57 @@ def gaps_sin_rellenar(df: pd.DataFrame, umbral: float = 0.02, maximo: int = 8) -
     return salida[-maximo:]
 
 
+# --------------------------------------------------- volumen y contexto -----
+def volumen_relativo(df: pd.DataFrame, sesiones: int = 5, referencia: int = 63) -> float | None:
+    """Volumen medio de las últimas `sesiones` frente a la media de 3 meses.
+
+    Un 1,0 significa "volumen normal"; 1,5 es un 50% por encima de lo
+    habitual. Por sí solo no dice si es bueno o malo: hay que cruzarlo con la
+    dirección del precio (capitulación vs. euforia), cosa que hace el motor
+    de timing, no este indicador.
+    """
+    if "Volume" not in df or len(df) < referencia:
+        return None
+    reciente = df["Volume"].tail(sesiones).mean()
+    base = df["Volume"].tail(referencia).mean()
+    if not base or pd.isna(base) or pd.isna(reciente) or base <= 0:
+        return None
+    return float(reciente / base)
+
+
+def variacion_pct(serie: pd.Series, sesiones: int) -> float | None:
+    """Variación porcentual del cierre en las últimas `sesiones` sesiones."""
+    limpio = serie.dropna()
+    if len(limpio) <= sesiones:
+        return None
+    anterior = float(limpio.iloc[-sesiones - 1])
+    if anterior <= 0:
+        return None
+    return float((float(limpio.iloc[-1]) / anterior - 1) * 100)
+
+
+def fuerza_relativa(cierre: pd.Series, cierre_ref: pd.Series, sesiones: int = 63) -> float | None:
+    """Diferencial de rentabilidad (en puntos porcentuales) frente a la
+    referencia sectorial o de mercado en la misma ventana temporal.
+
+    Positivo = el valor lo ha hecho mejor que su sector; negativo = peor. Se
+    calcula solo sobre las fechas comunes a ambas series para que un festivo
+    de un mercado no descuadre la comparación.
+    """
+    if cierre is None or cierre_ref is None or cierre.empty or cierre_ref.empty:
+        return None
+    comun = cierre.dropna().index.intersection(cierre_ref.dropna().index)
+    if len(comun) <= sesiones:
+        return None
+    a = cierre.reindex(comun).tail(sesiones + 1)
+    b = cierre_ref.reindex(comun).tail(sesiones + 1)
+    if float(a.iloc[0]) <= 0 or float(b.iloc[0]) <= 0:
+        return None
+    ret_valor = (float(a.iloc[-1]) / float(a.iloc[0]) - 1) * 100
+    ret_ref = (float(b.iloc[-1]) / float(b.iloc[0]) - 1) * 100
+    return float(ret_valor - ret_ref)
+
+
 # ------------------------------------------------------------ resumen -------
 def _ultimo(serie: pd.Series) -> float | None:
     if serie is None or len(serie) == 0:
@@ -128,8 +194,14 @@ def _ultimo(serie: pd.Series) -> float | None:
     return float(valor.iloc[-1]) if len(valor) else None
 
 
-def calcular_todo(historico: pd.DataFrame) -> dict:
-    """Devuelve el paquete técnico completo a partir del histórico OHLCV."""
+def calcular_todo(historico: pd.DataFrame, referencia: dict | None = None) -> dict:
+    """Devuelve el paquete técnico completo a partir del histórico OHLCV.
+
+    `referencia` es el paquete del ETF sectorial/de mercado
+    (`datos_api.obtener_referencia_mercado`) usado para la fuerza relativa.
+    Es opcional: sin él, todo lo demás se calcula igual y la fuerza relativa
+    queda como dato no disponible (se excluye del timing, no se pone a cero).
+    """
     if historico is None or historico.empty or len(historico) < 30:
         return {"disponible": False}
 
@@ -137,7 +209,7 @@ def calcular_todo(historico: pd.DataFrame) -> dict:
     cierre = df["Close"]
     macd_df = macd(cierre)
     rsi_s = rsi(cierre)
-    adx_s = adx(df)
+    adx_df = adx(df)
     obv_s = obv(df)
     atr_s = atr(df)
     mm50, mm200 = sma(cierre, 50), sma(cierre, 200)
@@ -162,6 +234,12 @@ def calcular_todo(historico: pd.DataFrame) -> dict:
     if len(cierre) >= 252 and cierre.iloc[-252] > 0:
         variacion_1a = float((precio / cierre.iloc[-252] - 1) * 100)
 
+    hist_ref = (referencia or {}).get("historico")
+    cierre_referencia = (
+        hist_ref["Close"] if hist_ref is not None and not hist_ref.empty and "Close" in hist_ref
+        else None
+    )
+
     return {
         "disponible": True,
         "precio": precio,
@@ -173,7 +251,9 @@ def calcular_todo(historico: pd.DataFrame) -> dict:
         "macd_hist_prev": float(macd_df["histograma"].dropna().iloc[-2])
         if len(macd_df["histograma"].dropna()) > 1
         else None,
-        "adx": _ultimo(adx_s),
+        "adx": _ultimo(adx_df["adx"]),
+        "di_mas": _ultimo(adx_df["di_mas"]),
+        "di_menos": _ultimo(adx_df["di_menos"]),
         "atr": _ultimo(atr_s),
         "obv": _ultimo(obv_s),
         "obv_tendencia": obv_tendencia,
@@ -184,7 +264,16 @@ def calcular_todo(historico: pd.DataFrame) -> dict:
         "ath": ath,
         "atl": atl,
         "variacion_1a_pct": variacion_1a,
+        "variacion_corta_pct": variacion_pct(cierre, VOLUMEN_SESIONES_RECIENTES),
         "volumen_medio_3m": float(df["Volume"].tail(63).mean()) if "Volume" in df else None,
+        "volumen_relativo": volumen_relativo(df, VOLUMEN_SESIONES_RECIENTES),
+        "fuerza_relativa_pct": fuerza_relativa(
+            cierre, cierre_referencia, FUERZA_RELATIVA_SESIONES
+        )
+        if cierre_referencia is not None
+        else None,
+        "referencia_simbolo": (referencia or {}).get("simbolo"),
+        "referencia_nombre": (referencia or {}).get("nombre"),
         "pivotes": pivotes(df),
         "fibonacci": fibonacci(min_52, max_52) if min_52 and max_52 else {},
         "gaps": gaps_sin_rellenar(df),
