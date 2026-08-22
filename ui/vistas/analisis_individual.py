@@ -12,6 +12,7 @@ from config.settings import (
     C_TEXTO_TENUE,
     C_VERDE,
     CONSENSO_ANALISTAS_ES,
+    CONSENSO_MIN_ANALISTAS,
     CURRENT_RATIO_MEDIANO_SECTOR,
     C_AMBAR,
     C_VERDE_OSCURO,
@@ -26,6 +27,7 @@ from config.settings import (
     PEG_MEDIANO_SECTOR,
     PER_MEDIANO_SECTOR,
     PESOS_CALIDAD,
+    PESOS_TIMING,
     PS_MEDIANO_SECTOR,
     ROA_MEDIANO_SECTOR,
     ROE_MEDIANO_SECTOR,
@@ -66,7 +68,8 @@ def ejecutar_analisis(ticker: str) -> dict:
     if not paquete["existe"]:
         return {"error": f"No se han encontrado datos para el ticker «{ticker}»."}
 
-    tecnico = indicadores.calcular_todo(paquete["historico"])
+    referencia = datos_api.obtener_referencia_mercado(paquete.get("sector"))
+    tecnico = indicadores.calcular_todo(paquete["historico"], referencia)
     fair_value = valoracion.calcular_fair_value(paquete)
     calidad = valoracion.puntuar_calidad(paquete, fair_value)
     momento = timing.calcular_timing(paquete, tecnico, fair_value, calidad)
@@ -449,9 +452,15 @@ def _bloque_4_calidad(a: dict) -> None:
     )
     alerta = v.get("alerta", {})
     C.alerta(alerta.get("etiqueta", TEXTO_ND), alerta.get("color", "#94a3b8"))
+    C.metrica("Precio actual de cotización", _precio_fmt(p.get("precio"), p))
     C.metrica("Potencial (upside)", fmt_pct(v.get("upside_pct")))
     if v.get("peso_consenso_doble"):
-        st.caption("Peso doble aplicado al consenso: cobertura ≥ 10 analistas.")
+        n = p.get("consenso", {}).get("n_analistas")
+        cobertura = f" ({n:.0f})" if es_valido(n) else ""
+        st.caption(
+            f"Peso doble aplicado al consenso: cobertura ≥ {CONSENSO_MIN_ANALISTAS} "
+            f"analistas{cobertura}."
+        )
 
     with st.expander("Desglose de la valoración"):
         for nombre, comp in v["componentes"].items():
@@ -658,7 +667,6 @@ def _bloque_5_timing(a: dict) -> None:
     if tm.get("nota_salud"):
         st.caption(tm["nota_salud"])
 
-    C.metrica("Margen de seguridad", fmt_pct(tm.get("margen_seguridad_pct")))
     clave_consenso = (a["paquete"].get("consenso", {}).get("recomendacion") or "").lower()
     texto_consenso, color_consenso = CONSENSO_ANALISTAS_ES.get(clave_consenso, (TEXTO_ND, "#94a3b8"))
     C.metrica_pastilla("Consenso de analistas", texto_consenso, color_consenso)
@@ -666,27 +674,159 @@ def _bloque_5_timing(a: dict) -> None:
     C.metrica("Analistas que cubren", fmt_num(n_analistas, 0))
 
     with st.expander("Componentes del timing"):
-        etiquetas = {
-            "rsi": "RSI",
-            "macd": "MACD",
-            "margen_seguridad": "Margen de seguridad",
-            "upside": "Upside",
-            "peg": "PEG (<1,5)",
-            "salud_fundamental": "Salud fundamental",
-            "mm50": "Distancia a MM50",
-            "mm200": "Distancia a MM200",
-            "variacion_1a": "Variación 1 año",
-            "distancia_ath_atl": "Distancia ATH / ATL",
-            "obv": "OBV",
-            "adx": "ADX",
-            "proximidad_earnings": "Proximidad de resultados",
-        }
-        for clave, etiqueta in etiquetas.items():
-            valor = tm["componentes"].get(clave)
-            peso = (tm.get("pesos_aplicados") or {}).get(clave)
-            sufijo = f"  ·  peso {peso * 100:.0f} %" if peso else "  ·  excluido"
-            C.metrica(etiqueta, (fmt_num(valor, 0) if es_valido(valor) else TEXTO_ND) + sufijo)
+        _desglose_timing(tm)
         C.metrica("Cobertura del modelo", fmt_pct((tm.get("cobertura") or 0) * 100, 0))
+        if tm.get("excluidos"):
+            st.caption("Excluidos por falta de dato: " + ", ".join(tm["excluidos"]))
+
+
+def _desglose_timing(tm: dict) -> None:
+    """Una fila por métrica: valor real a la izquierda y puntos obtenidos a la
+    derecha, con el mismo código de color que las métricas de calidad
+    (verde ≥70, ámbar ≥40, rojo por debajo; gris si no hay dato)."""
+    L = tm.get("lecturas", {})
+    comp = tm.get("componentes", {})
+
+    def _linea(clave: str, etiqueta: str) -> None:
+        peso_max = PESOS_TIMING.get(clave, 0)
+        valor_sub = comp.get(clave)
+        if not es_valido(valor_sub) or not peso_max:
+            C.metrica_color(f"{etiqueta}: sin dato", "excluido", C_TEXTO_TENUE)
+            return
+        puntos = valor_sub / 100 * peso_max
+        color = C_VERDE_OSCURO if valor_sub >= 70 else (C_AMBAR if valor_sub >= 40 else C_ROJO)
+        C.metrica_color(etiqueta, f"+{puntos:.1f}/{peso_max:.0f}", color)
+
+    # --- momentum y flujo ---------------------------------------------------
+    rsi = L.get("rsi")
+    _linea("rsi", f"RSI {fmt_num(rsi, 1)}" if es_valido(rsi) else "RSI (14)")
+
+    cruce, mejora = L.get("macd_cruce_alcista"), L.get("macd_mejora")
+    if cruce is None:
+        texto_macd = "MACD vs señal"
+    else:
+        estado = "cruce alcista" if cruce else "cruce bajista"
+        if mejora is True:
+            estado += ", histograma mejorando"
+        elif mejora is False:
+            estado += ", histograma deteriorándose"
+        texto_macd = f"MACD {fmt_num(L.get('macd'), 2)} vs señal {fmt_num(L.get('macd_senal'), 2)} ({estado})"
+    _linea("macd", texto_macd)
+
+    obv = L.get("obv_tendencia_pct")
+    _linea(
+        "obv",
+        f"Pendiente del OBV {fmt_pct(obv, 1)} (escala ±5 %)" if es_valido(obv) else "OBV",
+    )
+
+    adx, dm, dme = L.get("adx"), L.get("di_mas"), L.get("di_menos")
+    if es_valido(adx) and es_valido(dm) and es_valido(dme):
+        # Por debajo de 20 el ADX no acredita tendencia: decir "bajista" solo
+        # porque −DI supera a +DI por unas décimas sería sobreinterpretar ruido.
+        if adx < 20:
+            direccion = "sin tendencia definida"
+        else:
+            direccion = "tendencia alcista" if dm > dme else "tendencia bajista"
+        texto_adx = (
+            f"ADX {fmt_num(adx, 1)} · +DI {fmt_num(dm, 1)} / −DI {fmt_num(dme, 1)} "
+            f"({direccion})"
+        )
+    elif es_valido(adx):
+        texto_adx = f"ADX {fmt_num(adx, 1)} (sin dirección)"
+    else:
+        texto_adx = "ADX (14) con dirección"
+    _linea("adx", texto_adx)
+
+    vol, var_corta = L.get("volumen_relativo"), L.get("variacion_corta_pct")
+    if es_valido(vol):
+        texto_vol = f"Volumen 5 sesiones ×{fmt_num(vol, 2)} sobre media 3 m"
+        if es_valido(var_corta):
+            texto_vol += f" · precio {fmt_pct(var_corta, 1)}"
+    else:
+        texto_vol = "Volumen relativo reciente"
+    _linea("volumen_relativo", texto_vol)
+
+    # --- estructura de precio ------------------------------------------------
+    d50, d200 = L.get("distancia_mm50_pct"), L.get("distancia_mm200_pct")
+    _linea(
+        "mm50",
+        f"Precio {fmt_pct(d50, 1)} respecto a la MM50" if es_valido(d50) else "Distancia a la MM50",
+    )
+    _linea(
+        "mm200",
+        f"Precio {fmt_pct(d200, 1)} respecto a la MM200"
+        if es_valido(d200)
+        else "Distancia a la MM200",
+    )
+    pos = L.get("posicion_ath_atl")
+    _linea(
+        "distancia_ath_atl",
+        f"Posición en el rango ATL-ATH {fmt_num(pos, 0)} %"
+        if es_valido(pos)
+        else "Distancia a ATH / ATL",
+    )
+    var1a = L.get("variacion_1a_pct")
+    _linea(
+        "variacion_1a",
+        f"Variación a 1 año {fmt_pct(var1a, 1)}" if es_valido(var1a) else "Variación a 1 año",
+    )
+    zona = L.get("zona_confluencia") or {}
+    if zona.get("precio") is not None:
+        texto_zona = (
+            f"Zona DCA más cercana {fmt_pct(zona.get('distancia_pct'), 1)} "
+            f"(confluencia {fmt_num(zona.get('peso'), 1)})"
+        )
+    else:
+        texto_zona = "Proximidad a zona de confluencia DCA"
+    _linea("confluencia_dca", texto_zona)
+    if zona.get("motivos"):
+        # El motor DCA acumula un motivo por candidato, así que una zona con
+        # cuatro pivotes históricos repite "Soporte histórico" cuatro veces.
+        # Aquí se muestra cada tipo una sola vez, con su recuento si aparece
+        # varias veces; el peso de la zona ya refleja la acumulación.
+        vistos: dict[str, int] = {}
+        for m in zona["motivos"]:
+            vistos[m] = vistos.get(m, 0) + 1
+        st.caption(
+            "↳ " + " · ".join(m if n == 1 else f"{m} (×{n})" for m, n in vistos.items())
+        )
+
+    # --- valoración y calidad ------------------------------------------------
+    ups = L.get("upside_pct")
+    _linea(
+        "upside",
+        f"Potencial sobre el valor objetivo {fmt_pct(ups, 1)}"
+        if es_valido(ups)
+        else "Potencial sobre el valor objetivo",
+    )
+    peg = L.get("peg")
+    _linea("peg", f"PEG {fmt_num(peg, 2)} (escala 3,0 → 0,8)" if es_valido(peg) else "PEG")
+    salud = L.get("salud")
+    _linea(
+        "salud_fundamental",
+        f"Salud fundamental {fmt_num(salud, 0)}/100" if es_valido(salud) else "Salud fundamental",
+    )
+
+    # --- contexto ------------------------------------------------------------
+    fr, simbolo = L.get("fuerza_relativa_pct"), L.get("referencia_simbolo")
+    if es_valido(fr):
+        # Es un DIFERENCIAL de rentabilidad, así que se expresa en puntos
+        # porcentuales (pp) y no en %: mezclar ambas unidades induce a error.
+        texto_fr = (
+            f"Fuerza relativa a 3 m vs {simbolo or 'mercado'}: "
+            f"{fmt_pct(fr, 1).replace(' %', ' pp')}"
+        )
+    else:
+        texto_fr = "Fuerza relativa vs sector / mercado"
+    _linea("fuerza_relativa", texto_fr)
+
+    dias = L.get("dias_earnings")
+    _linea(
+        "proximidad_earnings",
+        f"Próximos resultados en {dias:.0f} días"
+        if es_valido(dias) and dias >= 0
+        else "Proximidad de resultados",
+    )
 
 
 # ============================================================== Bloque 6 ======
