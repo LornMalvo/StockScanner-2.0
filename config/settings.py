@@ -244,21 +244,90 @@ MARGEN_BRUTO_MEDIANO_SECTOR = {
 }
 
 # ----------------------------------------------- pesos de timing (Bloque 5) ----
+# Los pesos SUMAN 100 a propósito: así el peso bruto de cada métrica coincide
+# con el porcentaje que se muestra en pantalla (antes sumaban 112 y la
+# interfaz enseñaba peso/112, lo que hacía imposible cuadrar la tabla a ojo).
+#
+# Dos cambios de fondo respecto al esquema anterior:
+#
+#  1. `margen_seguridad` DESAPARECE, fundido en `upside`. Ambos partían del
+#     mismo numerador (valor_objetivo − precio) y solo cambiaban de
+#     denominador (valor objetivo vs precio), así que eran la misma lectura
+#     contada dos veces —20% del timing— y, peor aún, cualquier error del
+#     valor objetivo entraba por partida doble en la nota en vez de
+#     diluirse. Los 22 puntos que sumaban entre los dos bajan a 12.
+#  2. Tres dimensiones nuevas que antes no tenían representación alguna:
+#     intensidad del volumen reciente, contexto relativo frente al
+#     sector/mercado y proximidad a las zonas del propio motor DCA.
+#
+# Agrupación conceptual de los pesos (la interfaz no los agrupa, es solo la
+# lógica con la que están repartidos):
+#   Momentum y flujo    34  (rsi, macd, obv, adx, volumen_relativo)
+#   Estructura de precio 29  (mm50, mm200, ath/atl, variacion_1a, confluencia)
+#   Valoración          17  (upside, peg)
+#   Calidad             10  (salud_fundamental)
+#   Contexto            10  (fuerza_relativa, proximidad_earnings)
 PESOS_TIMING = {
-    "rsi": 12,
-    "macd": 12,
-    "margen_seguridad": 10,
+    "rsi": 10,
+    "macd": 9,
     "upside": 12,
-    "peg": 8,
-    "salud_fundamental": 12,
-    "mm50": 8,
-    "mm200": 8,
-    "variacion_1a": 6,
-    "distancia_ath_atl": 6,
-    "obv": 6,
-    "adx": 6,
-    "proximidad_earnings": 6,
+    "peg": 5,
+    "salud_fundamental": 10,
+    "mm50": 6,
+    "mm200": 6,
+    "variacion_1a": 4,
+    "distancia_ath_atl": 4,
+    "obv": 4,
+    "adx": 5,
+    "volumen_relativo": 6,
+    "fuerza_relativa": 6,
+    "confluencia_dca": 9,
+    "proximidad_earnings": 4,
 }
+
+# --------------------------- referencia de mercado para la fuerza relativa ----
+# ETF sectorial de referencia (familia SPDR Select Sector, la más líquida y
+# con histórico largo) para medir si el valor cae solo o cae con todo su
+# sector. Un RSI en sobreventa mientras el sector sube es debilidad
+# idiosincrática (mala señal); el mismo RSI con el sector cayendo es riesgo
+# sistémico, que no dice nada malo de la empresa en concreto.
+# Ojo: para valores no estadounidenses el ETF sectorial es una aproximación
+# imperfecta (divisa y ciclo distintos); se acepta a sabiendas por no
+# multiplicar las peticiones a Yahoo con un mapa de índices por país.
+ETF_SECTORIAL = {
+    "Technology": "XLK",
+    "Communication Services": "XLC",
+    "Consumer Cyclical": "XLY",
+    "Consumer Defensive": "XLP",
+    "Healthcare": "XLV",
+    "Financial Services": "XLF",
+    "Industrials": "XLI",
+    "Energy": "XLE",
+    "Basic Materials": "XLB",
+    "Utilities": "XLU",
+    "Real Estate": "XLRE",
+}
+ETF_MERCADO = "SPY"  # fallback cuando el sector no está en el mapa
+FUERZA_RELATIVA_SESIONES = 63  # ~3 meses de sesiones bursátiles
+
+# ------------------------------- volumen relativo del movimiento reciente ----
+VOLUMEN_SESIONES_RECIENTES = 5   # ventana corta que se compara con la media 3m
+VOLUMEN_VARIACION_NEUTRA = 1.0   # % por debajo del cual el tramo se considera plano
+
+# ------------------------ proximidad a zona de confluencia del motor DCA ------
+# Peso agregado a partir del cual una zona del motor DCA se considera
+# "confluencia fuerte" (equivale, p. ej., a MM200 + Fibonacci + mínimo de 52
+# semanas cayendo casi en el mismo precio).
+DCA_CONFLUENCIA_FUERTE = 5.0
+# Distancia a la zona medida en múltiplos de ATR(14), no en % fijo: a 0,5 ATR
+# o menos la zona se considera "pegada" al precio; a partir de 4 ATR deja de
+# ser relevante para el timing. En ATR y no en % por coherencia con el
+# rediseño pendiente del motor DCA (umbrales adaptativos, no fijos).
+CONFLUENCIA_ATR_CERCA = 0.5
+CONFLUENCIA_ATR_LEJOS = 4.0
+# Respaldo en % cuando no hay ATR disponible.
+CONFLUENCIA_PCT_CERCA = 0.02
+CONFLUENCIA_PCT_LEJOS = 0.15
 
 # El enunciado exige salud fundamental >= 60 para considerar buen timing.
 SALUD_MINIMA_TIMING = 60
