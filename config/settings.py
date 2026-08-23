@@ -653,7 +653,10 @@ CURRENT_RATIO_MEDIANO_SECTOR = {
 }
 
 # ------------------------------------------------------------------ caché ----
-TTL_PRECIO = 300        # 5 min
+TTL_PRECIO = 300        # 5 min — fast_info en vivo (obtener_precio_actual). No
+# lleva cubo de calendario: es la única pieza que de verdad necesita
+# frescura de minutos mientras el mercado respira, y es una llamada ligera
+# (no las ~1.250 velas del histórico), así que no es donde está el gasto.
 # El ETF sectorial/de mercado de referencia (fuerza relativa del timing) no
 # necesita la frescura de un precio en vivo: alimenta un diferencial de
 # rentabilidad a 63 SESIONES, así que una actualización diaria sobra de
@@ -662,6 +665,32 @@ TTL_PRECIO = 300        # 5 min
 # por IP compartida de Streamlit Community Cloud. 12 h cubre una sesión de
 # trabajo completa sin arrastrar datos de más de un día hábil de retraso.
 TTL_REFERENCIA_MERCADO = 43200  # 12 h
-TTL_FUNDAMENTALES = 3600  # 1 h
+# `obtener_historico()` ya NO usa este número como TTL real: usa un cubo de
+# calendario de mercado (ver `_cubo_mercado()` en datos_api.py) que congela
+# la caché entera mientras el mercado está cerrado y solo la revalida una
+# vez por hora en sesión. Este valor queda como techo de seguridad (red de
+# respaldo si el cubo fallara), no como el mecanismo real de invalidación.
+TTL_HISTORICO_RESPALDO = 21600  # 6 h, solo como cinturón de seguridad
+TTL_FUNDAMENTALES = 3600  # 1 h — consenso, estimaciones, precio objetivo:
+# datos que sí pueden moverse a lo largo del día.
+# Los estados financieros (cuenta de resultados, balance, flujo de caja)
+# solo se actualizan 4 veces al año, en la publicación de resultados.
+# Compartir TTL_FUNDAMENTALES (1 h) con ellos repetía la misma petición
+# varias veces al día sin ninguna necesidad real. La caché en memoria usa
+# este TTL (L1); además se respalda en Supabase (L2, ver bd_supabase.py)
+# con este mismo horizonte para sobrevivir al reinicio del contenedor de
+# Streamlit Community Cloud tras un periodo de inactividad.
+TTL_ESTADOS_FINANCIEROS = 172800  # 48 h
 TTL_NOTICIAS = 900      # 15 min
 TTL_FX = 600            # 10 min
+
+# ------------------------------------------------------- calendario de mercado
+# Usado por `_cubo_mercado()` en datos_api.py para no gastar peticiones de
+# histórico cuando el mercado está cerrado (fin de semana, fuera de horario):
+# mientras esté cerrado, el "cubo" no cambia y la caché no se revalida.
+MERCADO_ZONA_HORARIA = "America/New_York"
+MERCADO_HORA_APERTURA = (9, 30)   # 9:30 ET
+MERCADO_HORA_CIERRE = (16, 0)     # 16:00 ET
+# Festivos NYSE no contemplados en esta primera versión: un festivo entre
+# semana se trata como sesión normal (gasta, como mucho, una petición de
+# histórico de más ese día). Añadir una lista estática si compensa.
