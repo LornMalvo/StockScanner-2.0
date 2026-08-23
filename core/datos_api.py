@@ -24,6 +24,7 @@ from config.settings import (
     TTL_FX,
     TTL_NOTICIAS,
     TTL_PRECIO,
+    TTL_REFERENCIA_MERCADO,
 )
 from utils.formato import es_valido, num, primero_valido
 
@@ -213,16 +214,21 @@ def obtener_historico(ticker: str, periodo: str = "5y", intervalo: str = "1d") -
 
 
 
-@st.cache_data(ttl=TTL_PRECIO, show_spinner=False)
+@st.cache_data(ttl=TTL_REFERENCIA_MERCADO, show_spinner=False)
 def obtener_referencia_mercado(sector: str | None) -> dict:
     """Histórico del ETF sectorial de referencia (o del mercado como respaldo).
 
     Sirve para medir la fuerza relativa del valor: si cae solo o cae con todo
-    su sector. Coste en peticiones: UNA llamada más por análisis, pero la
-    caché va indexada por símbolo del ETF, así que todos los tickers de un
-    mismo sector analizados dentro del TTL comparten la misma descarga (en el
-    Rastreador, un lote de 10 tecnológicas gasta una sola petición extra en
-    total, no diez).
+    su sector. Caché a `TTL_REFERENCIA_MERCADO` (12 h), mucho más larga que
+    la de un precio en vivo: alimenta un diferencial a 63 sesiones, así que
+    la frescura de 5 minutos de `TTL_PRECIO` no aporta nada y solo multiplica
+    peticiones a Yahoo sin necesidad. Al estar cacheada esta función (y no
+    solo `obtener_historico()` por dentro, que sigue en TTL_PRECIO), un
+    acierto de caché aquí evita también la llamada interna: durante esas
+    12 h, todos los tickers de un mismo sector comparten la misma descarga
+    sin volver a tocar la red (en el Rastreador, un lote de 10 tecnológicas
+    gasta una sola petición extra en total, no diez, y esa petición no se
+    repite hasta el día siguiente).
     """
     simbolo = ETF_SECTORIAL.get(sector or "", ETF_MERCADO)
     historico = obtener_historico(simbolo, periodo="2y")

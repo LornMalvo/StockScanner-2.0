@@ -310,6 +310,10 @@ def _lecturas(paquete: dict, tec: dict, precio, upside, peg, salud, fecha_earnin
         "referencia_simbolo": tec.get("referencia_simbolo"),
         "referencia_nombre": tec.get("referencia_nombre"),
         "zona_confluencia": zona,
+        # Sin peso propio: pura lectura de contexto (ver
+        # `indicadores.cruce_medias`), consumida solo por la fila
+        # informativa del desglose de la UI, nunca por `ponderar()`.
+        "cruce_medias": tec.get("cruce_medias") or {},
         "dias_earnings": dias_hasta(fecha_earnings),
     }
 
@@ -349,7 +353,17 @@ def calcular_timing(paquete: dict, tecnico: dict, valoracion: dict, calidad: dic
         "salud_fundamental": escalar(salud, 30.0, 85.0),
         "mm50": _puntuar_distancia_media(precio, tecnico.get("mm50")),
         "mm200": _puntuar_distancia_media(precio, tecnico.get("mm200")),
-        "variacion_1a": escalar(tecnico.get("variacion_1a_pct"), -45.0, 25.0),
+        # INVERTIDA respecto a la versión anterior (que premiaba la subida
+        # de los últimos 12 meses como si fuera momentum). Con -45/+25 como
+        # anclas de "malo"/"bueno", una subida del +25% puntuaba casi
+        # el máximo (caso real: NBIX +12,8% -> 82,6/100) — justo lo
+        # contrario de lo que persigue este bloque: encontrar el MEJOR
+        # MOMENTO DE ENTRADA, no premiar que la acción ya haya subido y esté
+        # más cara. El resto del bloque es coherentemente de reversión a la
+        # media (RSI en zona 30-45, distancia a medias "justo por encima",
+        # ATH/ATL en 25-55% del rango); esta métrica ahora sigue el mismo
+        # criterio: a más caída en 12 meses, más puntos; a más subida, menos.
+        "variacion_1a": escalar(tecnico.get("variacion_1a_pct"), 25.0, -45.0),
         "distancia_ath_atl": _puntuar_ath_atl(tecnico),
         "obv": escalar(tecnico.get("obv_tendencia"), -0.05, 0.05),
         "adx": _puntuar_adx(tecnico),

@@ -10,7 +10,13 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from config.settings import FUERZA_RELATIVA_SESIONES, VOLUMEN_SESIONES_RECIENTES
+from config.settings import (
+    CRUCE_PROXIMO_PCT,
+    CRUCE_VENTANA_BUSQUEDA,
+    CRUCE_VENTANA_PENDIENTE,
+    FUERZA_RELATIVA_SESIONES,
+    VOLUMEN_SESIONES_RECIENTES,
+)
 
 
 # ------------------------------------------------------------- básicos ------
@@ -186,6 +192,83 @@ def fuerza_relativa(cierre: pd.Series, cierre_ref: pd.Series, sesiones: int = 63
     return float(ret_valor - ret_ref)
 
 
+def cruce_medias(
+    mm50: pd.Series,
+    mm200: pd.Series,
+    ventana_busqueda: int = 120,
+    ventana_pendiente: int = 10,
+    proximo_pct: float = 3.0,
+) -> dict:
+    """Estado del cruce entre MM50 y MM200 (Golden Cross / Death Cross).
+
+    PURAMENTE INFORMATIVO: no genera puntuación, no tiene peso propio en
+    `PESOS_TIMING`. La fuerza y dirección de tendencia que un cruce refleja
+    ya las captura el ADX direccional, y la distancia del precio a cada
+    media ya la capturan `mm50`/`mm200`; darle un peso propio duplicaría esa
+    señal en vez de aportar una nueva (mismo problema que llevó a fundir
+    `margen_seguridad` en `upside`).
+
+    Devuelve:
+      - `estado_actual`: "alcista" (MM50 > MM200) o "bajista" (MM50 < MM200)
+        en este momento, con independencia de cuándo se cruzaron.
+      - `distancia_pct`: separación entre ambas medias, en % sobre la MM200.
+      - `sesiones_desde_cruce` / `tipo_ultimo_cruce`: si hay un cambio de
+        signo dentro de `ventana_busqueda` sesiones, cuántas lleva y si fue
+        "golden" o "death". `None` si el estado actual viene de más atrás.
+      - `proximo_a_cruzar`: True si las medias están cerca (`proximo_pct`) Y
+        convergiendo hacia el cruce contrario al estado actual, no solo
+        cerca por casualidad con tendencia a separarse de nuevo.
+    """
+    if mm50 is None or mm200 is None:
+        return {}
+    diff = (mm50 - mm200).dropna()
+    if len(diff) < 2:
+        return {}
+
+    ultimo = float(diff.iloc[-1])
+    mm200_ultimo = mm200.dropna()
+    mm200_ultimo = float(mm200_ultimo.iloc[-1]) if len(mm200_ultimo) else None
+    distancia_pct = (ultimo / mm200_ultimo * 100) if mm200_ultimo else None
+    estado_actual = "alcista" if ultimo > 0 else ("bajista" if ultimo < 0 else None)
+
+    ventana = diff.tail(ventana_busqueda)
+    signo = np.sign(ventana.values)
+    sesiones_cruce, tipo_cruce = None, None
+    for i in range(len(signo) - 1, 0, -1):
+        if signo[i] != 0 and signo[i - 1] != 0 and signo[i] != signo[i - 1]:
+            sesiones_cruce = len(signo) - 1 - i
+            tipo_cruce = "golden" if signo[i] > 0 else "death"
+            break
+
+    # Convergencia: el diferencial se acerca a cero (pendiente de signo
+    # opuesto al estado actual), no simplemente "es pequeño" — un
+    # diferencial pequeño que se está ALEJANDO de cero no es una
+    # convergencia real, aunque hoy esté cerca.
+    convergiendo = False
+    tramo = diff.tail(ventana_pendiente)
+    if len(tramo) >= ventana_pendiente:
+        pendiente = float(np.polyfit(range(len(tramo)), tramo.values, 1)[0])
+        if estado_actual == "alcista" and pendiente < 0:
+            convergiendo = True
+        elif estado_actual == "bajista" and pendiente > 0:
+            convergiendo = True
+
+    proximo = (
+        convergiendo
+        and distancia_pct is not None
+        and abs(distancia_pct) <= proximo_pct
+    )
+
+    return {
+        "estado_actual": estado_actual,
+        "distancia_pct": distancia_pct,
+        "sesiones_desde_cruce": sesiones_cruce,
+        "tipo_ultimo_cruce": tipo_cruce,
+        "convergiendo": convergiendo,
+        "proximo_a_cruzar": proximo,
+    }
+
+
 # ------------------------------------------------------------ resumen -------
 def _ultimo(serie: pd.Series) -> float | None:
     if serie is None or len(serie) == 0:
@@ -274,6 +357,9 @@ def calcular_todo(historico: pd.DataFrame, referencia: dict | None = None) -> di
         else None,
         "referencia_simbolo": (referencia or {}).get("simbolo"),
         "referencia_nombre": (referencia or {}).get("nombre"),
+        "cruce_medias": cruce_medias(
+            mm50, mm200, CRUCE_VENTANA_BUSQUEDA, CRUCE_VENTANA_PENDIENTE, CRUCE_PROXIMO_PCT
+        ),
         "pivotes": pivotes(df),
         "fibonacci": fibonacci(min_52, max_52) if min_52 and max_52 else {},
         "gaps": gaps_sin_rellenar(df),
