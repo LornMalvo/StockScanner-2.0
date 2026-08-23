@@ -62,9 +62,14 @@ def _precio_fmt(valor, p: dict) -> str:
 
 
 # ------------------------------------------------------------ orquestación --
-def ejecutar_analisis(ticker: str) -> dict:
-    """Encadena datos -> técnico -> valoración -> calidad -> timing -> plan."""
-    paquete = datos_api.obtener_paquete(ticker)
+def ejecutar_analisis(ticker: str, incluir_noticias: bool = True) -> dict:
+    """Encadena datos -> técnico -> valoración -> calidad -> timing -> plan.
+
+    `incluir_noticias=False` se usa desde el Rastreador: las noticias no
+    alimentan ningún cálculo (Calidad, Valoración, Timing), así que pedirlas
+    en un escaneo por lote solo tira peticiones a la basura.
+    """
+    paquete = datos_api.obtener_paquete(ticker, incluir_noticias=incluir_noticias)
     if not paquete["existe"]:
         return {"error": f"No se han encontrado datos para el ticker «{ticker}»."}
 

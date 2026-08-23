@@ -43,8 +43,11 @@ def render() -> None:
         return
 
     filas, invertido_total, valor_total = [], 0.0, 0.0
+    # Una sola petición para el precio de todas las posiciones, en vez de
+    # una por posición.
+    precios = datos_api.obtener_precios_lote([p["ticker"] for p in posiciones])
     for pos in posiciones:
-        precio_actual = datos_api.obtener_precio_actual(pos["ticker"])
+        precio_actual = precios.get(pos["ticker"])
         invertido = (pos.get("acciones") or 0) * (pos.get("precio_compra") or 0)
         valor = (pos.get("acciones") or 0) * precio_actual if es_valido(precio_actual) else None
         if es_valido(valor):

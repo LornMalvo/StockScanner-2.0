@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
 from config.settings import TEXTO_ND
@@ -25,11 +26,20 @@ def render() -> None:
         st.info("Todavía no has marcado ninguna empresa. Usa la estrella del Análisis Individual.")
         return
 
+    # Una sola petición HTTP para el histórico de todos los favoritos, en
+    # vez de 2 llamadas (precio + histórico) por favorito. El precio se
+    # deriva del último cierre del propio histórico de 1 mes, así que no
+    # hace falta una llamada aparte a fast_info aquí: para un listado
+    # resumen no necesitamos su precisión al segundo (sí se sigue usando en
+    # el Análisis Individual, vía obtener_precio_actual).
+    tickers = [f["ticker"] for f in favoritos]
+    historicos = datos_api.obtener_historicos_lote(tickers, periodo="1mo")
+
     for fav in favoritos:
         with st.container(border=True):
             col_id, col_precio, col_var, col_acc = st.columns([3, 1.4, 1.4, 1.4])
-            precio = datos_api.obtener_precio_actual(fav["ticker"])
-            hist = datos_api.obtener_historico(fav["ticker"], periodo="1mo")
+            hist = historicos.get(fav["ticker"], pd.DataFrame())
+            precio = float(hist["Close"].iloc[-1]) if not hist.empty else None
             variacion = None
             if not hist.empty and len(hist) > 1 and es_valido(precio):
                 variacion = (precio / float(hist["Close"].iloc[0]) - 1) * 100

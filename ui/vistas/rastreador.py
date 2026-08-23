@@ -10,7 +10,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from core import bd_supabase
+from core import bd_supabase, datos_api
 from ui.vistas.analisis_individual import ejecutar_analisis
 
 
@@ -60,9 +60,23 @@ def render() -> None:
 
     filas = []
     barra = st.progress(0.0, text="Analizando…")
+
+    # Instrumentación: mide solo este rastreo, no lo acumulado de la sesión.
+    datos_api.reset_metricas()
+
+    # Precalienta en una sola petición HTTP el histórico de todos los
+    # tickers del lote (yf.download en vez de N llamadas history()). El
+    # bucle de abajo, al llamar a ejecutar_analisis -> obtener_paquete ->
+    # obtener_historico(ticker), encuentra la caché ya caliente y no vuelve
+    # a tocar la red para esa pieza.
+    barra.progress(0.0, text="Descargando histórico en lote…")
+    datos_api.obtener_historicos_lote(tickers)
+
     for i, ticker in enumerate(tickers, start=1):
         barra.progress(i / len(tickers), text=f"Analizando {ticker} ({i}/{len(tickers)})")
-        a = ejecutar_analisis(ticker)
+        # incluir_noticias=False: no alimentan ningún cálculo del rastreo,
+        # solo se muestran en el Análisis Individual.
+        a = ejecutar_analisis(ticker, incluir_noticias=False)
         if "error" in a:
             filas.append({"Ticker": ticker, "Empresa": "No encontrado"})
             continue
@@ -81,6 +95,7 @@ def render() -> None:
             }
         )
     barra.empty()
+    datos_api.log_resumen_metricas(f"Rastreador ({len(tickers)} tickers)")
 
     df = pd.DataFrame(filas)
     if criterio in df.columns:

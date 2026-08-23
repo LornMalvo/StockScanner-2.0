@@ -30,6 +30,11 @@ def render() -> None:
         return
 
     for pos in posiciones:
+        # A diferencia de Favoritos/Cartera (puramente informativas), aquí
+        # el precio se usa para *cerrar* la operación — un registro que
+        # queda fijado en Supabase — así que se mantiene el precio
+        # individual vía fast_info (obtener_precio_actual), más preciso que
+        # el último cierre diario del lote, en vez de agrupar la petición.
         precio_actual = datos_api.obtener_precio_actual(pos["ticker"])
         entrada = pos.get("precio_apertura")
         rendimiento = (
