@@ -674,16 +674,46 @@ def _bloque_5_timing(a: dict) -> None:
     C.metrica("Analistas que cubren", fmt_num(n_analistas, 0))
 
     with st.expander("Componentes del timing"):
-        _desglose_timing(tm)
+        _desglose_timing(tm, a["paquete"])
         C.metrica("Cobertura del modelo", fmt_pct((tm.get("cobertura") or 0) * 100, 0))
         if tm.get("excluidos"):
             st.caption("Excluidos por falta de dato: " + ", ".join(tm["excluidos"]))
 
 
-def _desglose_timing(tm: dict) -> None:
-    """Una fila por métrica: valor real a la izquierda y puntos obtenidos a la
-    derecha, con el mismo código de color que las métricas de calidad
-    (verde ≥70, ámbar ≥40, rojo por debajo; gris si no hay dato)."""
+def _texto_cruce_medias(cm: dict) -> tuple[str, str]:
+    """Texto y color de la fila informativa de Golden/Death Cross.
+
+    Sin fracción de puntos a propósito (a diferencia de `_linea`): dejar
+    claro de un vistazo que no pondera en la nota de timing, solo aporta
+    contexto ya recogido en ADX, MM50 y MM200.
+    """
+    if not cm or cm.get("estado_actual") is None:
+        return "Sin datos suficientes de MM50 / MM200", C_TEXTO_TENUE
+
+    sesiones = cm.get("sesiones_desde_cruce")
+    tipo = cm.get("tipo_ultimo_cruce")
+    if sesiones is not None and tipo == "golden":
+        plural = "sesión" if sesiones == 1 else "sesiones"
+        return f"Golden Cross activo (hace {sesiones} {plural})", C_VERDE_OSCURO
+    if sesiones is not None and tipo == "death":
+        plural = "sesión" if sesiones == 1 else "sesiones"
+        return f"Death Cross activo (hace {sesiones} {plural})", C_ROJO
+
+    if cm.get("proximo_a_cruzar"):
+        objetivo = "Golden Cross" if cm.get("estado_actual") == "bajista" else "Death Cross"
+        distancia = abs(cm.get("distancia_pct") or 0.0)
+        return f"Convergiendo: MM50 a {fmt_num(distancia, 1)} % del {objetivo}", C_AMBAR
+
+    tendencia = "alcista" if cm.get("estado_actual") == "alcista" else "bajista"
+    return f"Tendencia de medias {tendencia} establecida (sin cruce reciente)", C_TEXTO_TENUE
+
+
+def _desglose_timing(tm: dict, p: dict) -> None:
+    """Una fila por métrica, ORDENADAS DE MAYOR A MENOR PESO (mismo criterio
+    que el desglose de Calidad): valor real a la izquierda y puntos
+    obtenidos a la derecha, con el mismo código de color (verde ≥70, ámbar
+    ≥40, rojo por debajo; gris si no hay dato). Cierra con una fila
+    informativa SIN peso propio: el estado del cruce MM50/MM200."""
     L = tm.get("lecturas", {})
     comp = tm.get("componentes", {})
 
@@ -697,27 +727,30 @@ def _desglose_timing(tm: dict) -> None:
         color = C_VERDE_OSCURO if valor_sub >= 70 else (C_AMBAR if valor_sub >= 40 else C_ROJO)
         C.metrica_color(etiqueta, f"+{puntos:.1f}/{peso_max:.0f}", color)
 
-    # --- momentum y flujo ---------------------------------------------------
+    # --- se construye el texto de cada métrica primero; el orden de render --
+    # se decide después, por peso, para que cambiar PESOS_TIMING reordene la
+    # tabla automáticamente sin tocar esta función.
+    textos: dict[str, str] = {}
+
     rsi = L.get("rsi")
-    _linea("rsi", f"RSI {fmt_num(rsi, 1)}" if es_valido(rsi) else "RSI (14)")
+    textos["rsi"] = f"RSI {fmt_num(rsi, 1)}" if es_valido(rsi) else "RSI (14)"
 
     cruce, mejora = L.get("macd_cruce_alcista"), L.get("macd_mejora")
     if cruce is None:
-        texto_macd = "MACD vs señal"
+        textos["macd"] = "MACD vs señal"
     else:
         estado = "cruce alcista" if cruce else "cruce bajista"
         if mejora is True:
             estado += ", histograma mejorando"
         elif mejora is False:
             estado += ", histograma deteriorándose"
-        texto_macd = f"MACD {fmt_num(L.get('macd'), 2)} vs señal {fmt_num(L.get('macd_senal'), 2)} ({estado})"
-    _linea("macd", texto_macd)
+        textos["macd"] = (
+            f"MACD {fmt_num(L.get('macd'), 2)} vs señal {fmt_num(L.get('macd_senal'), 2)} "
+            f"({estado})"
+        )
 
     obv = L.get("obv_tendencia_pct")
-    _linea(
-        "obv",
-        f"Pendiente del OBV {fmt_pct(obv, 1)} (escala ±5 %)" if es_valido(obv) else "OBV",
-    )
+    textos["obv"] = f"Pendiente del OBV {fmt_pct(obv, 1)} (escala ±5 %)" if es_valido(obv) else "OBV"
 
     adx, dm, dme = L.get("adx"), L.get("di_mas"), L.get("di_menos")
     if es_valido(adx) and es_valido(dm) and es_valido(dme):
@@ -727,106 +760,107 @@ def _desglose_timing(tm: dict) -> None:
             direccion = "sin tendencia definida"
         else:
             direccion = "tendencia alcista" if dm > dme else "tendencia bajista"
-        texto_adx = (
-            f"ADX {fmt_num(adx, 1)} · +DI {fmt_num(dm, 1)} / −DI {fmt_num(dme, 1)} "
-            f"({direccion})"
+        textos["adx"] = (
+            f"ADX {fmt_num(adx, 1)} · +DI {fmt_num(dm, 1)} / −DI {fmt_num(dme, 1)} ({direccion})"
         )
     elif es_valido(adx):
-        texto_adx = f"ADX {fmt_num(adx, 1)} (sin dirección)"
+        textos["adx"] = f"ADX {fmt_num(adx, 1)} (sin dirección)"
     else:
-        texto_adx = "ADX (14) con dirección"
-    _linea("adx", texto_adx)
+        textos["adx"] = "ADX (14) con dirección"
 
     vol, var_corta = L.get("volumen_relativo"), L.get("variacion_corta_pct")
     if es_valido(vol):
-        texto_vol = f"Volumen 5 sesiones ×{fmt_num(vol, 2)} sobre media 3 m"
+        textos["volumen_relativo"] = f"Volumen 5 sesiones ×{fmt_num(vol, 2)} sobre media 3 m"
         if es_valido(var_corta):
-            texto_vol += f" · precio {fmt_pct(var_corta, 1)}"
+            textos["volumen_relativo"] += f" · precio {fmt_pct(var_corta, 1)}"
     else:
-        texto_vol = "Volumen relativo reciente"
-    _linea("volumen_relativo", texto_vol)
+        textos["volumen_relativo"] = "Volumen relativo reciente"
 
-    # --- estructura de precio ------------------------------------------------
     d50, d200 = L.get("distancia_mm50_pct"), L.get("distancia_mm200_pct")
-    _linea(
-        "mm50",
-        f"Precio {fmt_pct(d50, 1)} respecto a la MM50" if es_valido(d50) else "Distancia a la MM50",
+    textos["mm50"] = (
+        f"Precio {fmt_pct(d50, 1)} respecto a la MM50" if es_valido(d50) else "Distancia a la MM50"
     )
-    _linea(
-        "mm200",
+    textos["mm200"] = (
         f"Precio {fmt_pct(d200, 1)} respecto a la MM200"
         if es_valido(d200)
-        else "Distancia a la MM200",
+        else "Distancia a la MM200"
     )
+
     pos = L.get("posicion_ath_atl")
-    _linea(
-        "distancia_ath_atl",
+    textos["distancia_ath_atl"] = (
         f"Posición en el rango ATL-ATH {fmt_num(pos, 0)} %"
         if es_valido(pos)
-        else "Distancia a ATH / ATL",
+        else "Distancia a ATH / ATL"
     )
+
     var1a = L.get("variacion_1a_pct")
-    _linea(
-        "variacion_1a",
-        f"Variación a 1 año {fmt_pct(var1a, 1)}" if es_valido(var1a) else "Variación a 1 año",
+    textos["variacion_1a"] = (
+        f"Variación a 1 año {fmt_pct(var1a, 1)}" if es_valido(var1a) else "Variación a 1 año"
     )
+
     zona = L.get("zona_confluencia") or {}
     if zona.get("precio") is not None:
-        texto_zona = (
-            f"Zona DCA más cercana {fmt_pct(zona.get('distancia_pct'), 1)} "
-            f"(confluencia {fmt_num(zona.get('peso'), 1)})"
+        textos["confluencia_dca"] = (
+            f"Zona DCA más cercana en {_precio_fmt(zona.get('precio'), p)} "
+            f"({fmt_pct(zona.get('distancia_pct'), 1)}, confluencia {fmt_num(zona.get('peso'), 1)})"
         )
     else:
-        texto_zona = "Proximidad a zona de confluencia DCA"
-    _linea("confluencia_dca", texto_zona)
-    if zona.get("motivos"):
-        # El motor DCA acumula un motivo por candidato, así que una zona con
-        # cuatro pivotes históricos repite "Soporte histórico" cuatro veces.
-        # Aquí se muestra cada tipo una sola vez, con su recuento si aparece
-        # varias veces; el peso de la zona ya refleja la acumulación.
-        vistos: dict[str, int] = {}
-        for m in zona["motivos"]:
-            vistos[m] = vistos.get(m, 0) + 1
-        st.caption(
-            "↳ " + " · ".join(m if n == 1 else f"{m} (×{n})" for m, n in vistos.items())
-        )
+        textos["confluencia_dca"] = "Proximidad a zona de confluencia DCA"
 
-    # --- valoración y calidad ------------------------------------------------
     ups = L.get("upside_pct")
-    _linea(
-        "upside",
+    textos["upside"] = (
         f"Potencial sobre el valor objetivo {fmt_pct(ups, 1)}"
         if es_valido(ups)
-        else "Potencial sobre el valor objetivo",
-    )
-    peg = L.get("peg")
-    _linea("peg", f"PEG {fmt_num(peg, 2)} (escala 3,0 → 0,8)" if es_valido(peg) else "PEG")
-    salud = L.get("salud")
-    _linea(
-        "salud_fundamental",
-        f"Salud fundamental {fmt_num(salud, 0)}/100" if es_valido(salud) else "Salud fundamental",
+        else "Potencial sobre el valor objetivo"
     )
 
-    # --- contexto ------------------------------------------------------------
+    peg = L.get("peg")
+    textos["peg"] = f"PEG {fmt_num(peg, 2)} (escala 3,0 → 0,8)" if es_valido(peg) else "PEG"
+
+    salud = L.get("salud")
+    textos["salud_fundamental"] = (
+        f"Salud fundamental {fmt_num(salud, 0)}/100" if es_valido(salud) else "Salud fundamental"
+    )
+
     fr, simbolo = L.get("fuerza_relativa_pct"), L.get("referencia_simbolo")
     if es_valido(fr):
         # Es un DIFERENCIAL de rentabilidad, así que se expresa en puntos
         # porcentuales (pp) y no en %: mezclar ambas unidades induce a error.
-        texto_fr = (
+        textos["fuerza_relativa"] = (
             f"Fuerza relativa a 3 m vs {simbolo or 'mercado'}: "
             f"{fmt_pct(fr, 1).replace(' %', ' pp')}"
         )
     else:
-        texto_fr = "Fuerza relativa vs sector / mercado"
-    _linea("fuerza_relativa", texto_fr)
+        textos["fuerza_relativa"] = "Fuerza relativa vs sector / mercado"
 
     dias = L.get("dias_earnings")
-    _linea(
-        "proximidad_earnings",
+    textos["proximidad_earnings"] = (
         f"Próximos resultados en {dias:.0f} días"
         if es_valido(dias) and dias >= 0
-        else "Proximidad de resultados",
+        else "Proximidad de resultados"
     )
+
+    # --- render: de mayor a menor peso, empates por orden de PESOS_TIMING ---
+    orden = [clave for clave, _ in sorted(PESOS_TIMING.items(), key=lambda kv: -kv[1])]
+    for clave in orden:
+        _linea(clave, textos.get(clave, clave))
+        if clave == "confluencia_dca" and zona.get("motivos"):
+            # El motor DCA acumula un motivo por candidato, así que una zona
+            # con cuatro pivotes históricos repite "Soporte histórico" cuatro
+            # veces. Aquí se muestra cada tipo una sola vez, con recuento si
+            # aparece varias veces; el peso de la zona ya refleja la
+            # acumulación.
+            vistos: dict[str, int] = {}
+            for m in zona["motivos"]:
+                vistos[m] = vistos.get(m, 0) + 1
+            st.caption(
+                "↳ " + " · ".join(m if n == 1 else f"{m} (×{n})" for m, n in vistos.items())
+            )
+
+    # --- fila informativa sin peso: cruce de medias --------------------------
+    st.caption("Sin peso propio en la puntuación — información de contexto:")
+    texto_cm, color_cm = _texto_cruce_medias(L.get("cruce_medias") or {})
+    C.metrica_color("Cruce de medias (MM50 / MM200)", texto_cm, color_cm)
 
 
 # ============================================================== Bloque 6 ======
