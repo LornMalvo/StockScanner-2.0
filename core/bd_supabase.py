@@ -7,6 +7,7 @@ romper. El esquema SQL está en sql/schema.sql.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import streamlit as st
@@ -24,6 +25,7 @@ T_CARTERA = "cartera_posiciones"
 T_PAPER = "paper_trading_posiciones"
 T_NIVELES = "paper_trading_niveles"
 T_TRADUCCIONES = "descripciones_traducidas"
+T_CACHE_API = "cache_api"
 
 USUARIO_DEFECTO = "local"
 
@@ -323,6 +325,84 @@ def guardar_descripcion_traducida(
                 "traducido_en": _ahora(),
             },
             on_conflict="ticker",
+        ).execute()
+        return True
+    except Exception:
+        return False
+
+
+# --------------------------------------------------- caché L2 genérica (API) --
+# Respaldo persistente para lo que casi nunca cambia (estados financieros,
+# perfil de Finnhub, CIK de SEC). La caché en memoria (`_almacen()` /
+# `st.cache_data` en datos_api.py) es L1: rápida, pero se vacía entera cada
+# vez que Streamlit Community Cloud reinicia el contenedor por inactividad.
+# Esta tabla es L2: sobrevive a ese reinicio, así que el primer análisis del
+# día no vuelve a pagar el peor caso completo de peticiones. No sustituye a
+# L1 (que sigue siendo más rápida en caliente), solo la respalda cuando el
+# proceso se reinicia. Sin usuario_id: estos datos no dependen de quién
+# pregunta, son los mismos para todos.
+#
+# `valor` se guarda como JSON (columna jsonb). Estructuras que no son
+# directamente serializables (p. ej. DataFrames de pandas) se convierten
+# antes de llamar a `cache_l2_guardar` — ver `_estados_a_json()` en
+# datos_api.py para el caso de los estados financieros.
+def cache_l2_leer(clave: str, ttl_segundos: float):
+    """Devuelve el valor cacheado si existe y no ha superado `ttl_segundos`.
+
+    None si no hay conexión, no hay entrada, o la entrada ha caducado.
+    """
+    sb = cliente()
+    if sb is None:
+        return None
+    try:
+        r = (
+            sb.table(T_CACHE_API)
+            .select("valor, guardado_en")
+            .eq("clave", clave)
+            .limit(1)
+            .execute()
+        )
+        filas = r.data or []
+        if not filas:
+            return None
+        marca = filas[0].get("guardado_en")
+        if not marca:
+            return None
+        guardado = datetime.fromisoformat(str(marca).replace("Z", "+00:00"))
+        edad = (datetime.now(timezone.utc) - guardado).total_seconds()
+        if edad > ttl_segundos:
+            return None
+        # El cliente de Supabase ya deserializa la columna jsonb a
+        # dict/list/etc. Si por lo que sea llega como texto (driver o
+        # versión distintos), se intenta parsear; si no, se devuelve tal
+        # cual para no romper con un error de tipo silencioso.
+        valor = filas[0].get("valor")
+        if isinstance(valor, str):
+            try:
+                return json.loads(valor)
+            except Exception:
+                return valor
+        return valor
+    except Exception:
+        return None
+
+
+def cache_l2_guardar(clave: str, valor) -> bool:
+    """Guarda (o sobrescribe) el valor bajo `clave`. `valor` debe ser
+    JSON-serializable (dict, list, str, número, None, o combinaciones).
+
+    Se pasa el objeto Python tal cual (no `json.dumps` manual): el propio
+    cliente de Supabase serializa el payload completo a JSON al hacer la
+    petición, y la columna es `jsonb`. Serializar aquí a mano produciría un
+    doble-encoding (un string JSON guardado dentro de otro string JSON).
+    """
+    sb = cliente()
+    if sb is None:
+        return False
+    try:
+        sb.table(T_CACHE_API).upsert(
+            {"clave": clave, "valor": valor, "guardado_en": _ahora()},
+            on_conflict="clave",
         ).execute()
         return True
     except Exception:

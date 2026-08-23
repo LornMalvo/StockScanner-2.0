@@ -5,12 +5,23 @@ Principios:
     una estructura vacía, y anotan el motivo en la clave `errores`.
   * Nada se rellena con ceros. Lo que no llega, no existe.
   * Todo va cacheado con TTL para no agotar las cuotas de API.
+  * Ninguna petición es prescindible: antes de tocar red se comprueba L1
+    (memoria), luego L2 (Supabase, solo para lo que casi nunca cambia).
 """
 
 from __future__ import annotations
 
+import io
+import logging
+import threading
 import time
-from datetime import date, datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, time as dtime, timedelta
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # Python < 3.9, no debería darse en este proyecto
+    ZoneInfo = None  # type: ignore
 
 import pandas as pd
 import requests
@@ -20,13 +31,21 @@ import yfinance as yf
 from config.settings import (
     ETF_MERCADO,
     ETF_SECTORIAL,
+    MERCADO_HORA_APERTURA,
+    MERCADO_HORA_CIERRE,
+    MERCADO_ZONA_HORARIA,
+    TTL_ESTADOS_FINANCIEROS,
     TTL_FUNDAMENTALES,
     TTL_FX,
+    TTL_HISTORICO_RESPALDO,
     TTL_NOTICIAS,
     TTL_PRECIO,
     TTL_REFERENCIA_MERCADO,
 )
+from core import bd_supabase
 from utils.formato import es_valido, num, primero_valido
+
+logger = logging.getLogger("stockscanner.api")
 
 SEC_UA = "StockScanner/1.0 (contacto: tu-email-real@dominio.com)"
 FINNHUB_BASE = "https://finnhub.io/api/v1"
@@ -36,7 +55,9 @@ FINNHUB_BASE = "https://finnhub.io/api/v1"
 # presupuesto real de peticiones es mucho menor de lo que parece.
 INTERVALO_MIN_YAHOO = 0.4
 REINTENTOS_YAHOO = 3
-TTL_FALLO = 120  # un fallo se recuerda 2 min, no una hora
+TTL_FALLO = 120  # rate-limit u otro fallo transitorio: se recuerda 2 min
+TTL_FALLO_TICKER_INEXISTENTE = 21600  # 6 h: un ticker mal escrito no va a
+# empezar a existir en 2 minutos; no tiene sentido reintentarlo tan seguido.
 
 
 @st.cache_resource(show_spinner=False, max_entries=64)
@@ -76,14 +97,102 @@ def _almacen() -> dict:
 
 
 _ULTIMA_PETICION = {"t": 0.0}
+_THROTTLE_LOCK = threading.Lock()
 
 
 def _throttle() -> None:
-    """Espacia las peticiones a Yahoo para no disparar el límite por IP."""
-    espera = INTERVALO_MIN_YAHOO - (time.monotonic() - _ULTIMA_PETICION["t"])
-    if espera > 0:
-        time.sleep(espera)
-    _ULTIMA_PETICION["t"] = time.monotonic()
+    """Espacia las peticiones a Yahoo para no disparar el límite por IP.
+
+    Protegido con lock: desde que `obtener_paquete()` lanza las llamadas a
+    Finnhub en paralelo (`_finnhub()`, que no pasa por aquí) y algunas de
+    ellas caen ocasionalmente a un respaldo de yfinance, más de un hilo
+    puede llamar a `_throttle()` a la vez. Sin lock, dos hilos podrían leer
+    `_ULTIMA_PETICION` antes de que ninguno la actualice y saltarse el
+    espaciado entre sí.
+    """
+    with _THROTTLE_LOCK:
+        espera = INTERVALO_MIN_YAHOO - (time.monotonic() - _ULTIMA_PETICION["t"])
+        if espera > 0:
+            time.sleep(espera)
+            _registrar("segundos_dormido", espera)
+        _ULTIMA_PETICION["t"] = time.monotonic()
+
+
+# ==================================================================== métricas =
+# Contador de peticiones reales, para poder medir el efecto de cualquier
+# cambio en vez de estimarlo a mano. No se muestra en la UI (decisión
+# explícita: no meter ruido visual) — se vuelca a los logs de la app
+# (visibles en "Manage app" de Streamlit Community Cloud) con
+# `log_resumen_metricas()`. `reset_metricas()` se llama al principio de un
+# rastreo o análisis para medir solo ese tramo.
+_METRICAS_LOCK = threading.Lock()
+_METRICAS: dict[str, float] = {
+    "peticiones_yahoo": 0,
+    "peticiones_yahoo_lote": 0,
+    "peticiones_finnhub": 0,
+    "aciertos_cache_l1": 0,
+    "aciertos_cache_l2": 0,
+    "fallos": 0,
+    "segundos_dormido": 0.0,
+}
+
+
+def _registrar(clave: str, delta: float = 1) -> None:
+    with _METRICAS_LOCK:
+        _METRICAS[clave] = _METRICAS.get(clave, 0) + delta
+
+
+def reset_metricas() -> None:
+    with _METRICAS_LOCK:
+        for k in _METRICAS:
+            _METRICAS[k] = 0.0 if isinstance(_METRICAS[k], float) else 0
+
+
+def resumen_metricas() -> dict:
+    with _METRICAS_LOCK:
+        return dict(_METRICAS)
+
+
+def log_resumen_metricas(etiqueta: str = "") -> None:
+    m = resumen_metricas()
+    logger.info(
+        "%s peticiones reales: %d Yahoo (+%d en lote) · %d Finnhub · "
+        "aciertos caché: %d L1 / %d L2 · fallos: %d · %.1fs de throttle",
+        f"[{etiqueta}]" if etiqueta else "",
+        m["peticiones_yahoo"],
+        m["peticiones_yahoo_lote"],
+        m["peticiones_finnhub"],
+        m["aciertos_cache_l1"],
+        m["aciertos_cache_l2"],
+        m["fallos"],
+        m["segundos_dormido"],
+    )
+
+
+# ========================================================= calendario de mercado
+def _cubo_mercado() -> str:
+    """Identificador que solo cambia cuando de verdad tiene sentido revalidar
+    el histórico de precio: se mantiene fijo todo el fin de semana o fuera
+    de horario (cero peticiones), y cambia una vez por hora durante la
+    sesión de mercado (para ir incorporando la vela del día en curso sin
+    recargar cada 5 minutos). No contempla festivos NYSE en esta primera
+    versión: un festivo entre semana se trata como sesión normal.
+
+    Se usa como parte de la clave de caché manual de `obtener_historico()`
+    y `obtener_historicos_lote()`, no como un TTL numérico — el cambio de
+    cubo ES la invalidación.
+    """
+    if ZoneInfo is None:
+        return "sin-zona"  # red de seguridad; no debería darse en este proyecto
+    ahora = datetime.now(ZoneInfo(MERCADO_ZONA_HORARIA))
+    apertura = dtime(*MERCADO_HORA_APERTURA)
+    cierre = dtime(*MERCADO_HORA_CIERRE)
+    if ahora.weekday() >= 5:  # sábado=5, domingo=6: mismo cubo todo el finde
+        iso = ahora.isocalendar()
+        return f"cerrado-{iso[0]}-w{iso[1]}"
+    if not (apertura <= ahora.time() <= cierre):
+        return f"cerrado-{ahora.date().isoformat()}"
+    return f"abierto-{ahora.date().isoformat()}-h{ahora.hour}"
 
 
 def _es_rate_limit(e: Exception) -> bool:
@@ -100,6 +209,7 @@ def _pedir(fn, intentos: int = REINTENTOS_YAHOO):
     ultimo: Exception | None = None
     for intento in range(intentos):
         _throttle()
+        _registrar("peticiones_yahoo")
         try:
             return fn(), None
         except Exception as e:  # noqa: BLE001 - se reporta al llamante
@@ -108,6 +218,8 @@ def _pedir(fn, intentos: int = REINTENTOS_YAHOO):
                 time.sleep(1.5 * (2**intento))
                 continue
             break
+    if ultimo is not None:
+        _registrar("fallos")
     return None, ultimo
 
 
@@ -116,9 +228,16 @@ def _cache_leer(clave: str, ttl: float):
     if not registro:
         return None
     marca, valor = registro
-    caducidad = TTL_FALLO if isinstance(valor, dict) and "_ss_error" in valor else ttl
+    if isinstance(valor, dict) and "_ss_error" in valor:
+        # Un ticker que no existe no va a empezar a existir en 2 minutos:
+        # ese fallo se recuerda mucho más tiempo. Un rate-limit sí puede
+        # resolverse pronto, así que ese sigue caducando rápido.
+        caducidad = TTL_FALLO_TICKER_INEXISTENTE if valor.get("_ss_no_existe") else TTL_FALLO
+    else:
+        caducidad = ttl
     if time.time() - marca > caducidad:
         return None
+    _registrar("aciertos_cache_l1")
     return valor
 
 
@@ -196,21 +315,125 @@ def obtener_info(ticker: str) -> dict:
         else:
             break
 
-    fallo = {"_ss_error": errores}
+    # Si el motivo final fue "respuesta sin campos de identidad" (no una
+    # excepción de red/rate-limit), lo más probable es que el ticker no
+    # exista o esté mal escrito — ese fallo se recuerda mucho más tiempo
+    # (ver TTL_FALLO_TICKER_INEXISTENTE en _cache_leer) que uno transitorio.
+    fallo = {"_ss_error": errores, "_ss_no_existe": vacio_sin_excepcion}
     _cache_guardar(clave, fallo)
     return fallo
 
 
-@st.cache_data(ttl=TTL_PRECIO, show_spinner=False)
 def obtener_historico(ticker: str, periodo: str = "5y", intervalo: str = "1d") -> pd.DataFrame:
-    df, _ = _pedir(
+    """Histórico de precio, cacheado por cubo de calendario de mercado (ver
+    `_cubo_mercado()`) en vez de un TTL fijo: mientras el mercado está
+    cerrado no se dispara ni una petición, y en sesión se revalida como
+    mucho una vez por hora (los indicadores técnicos se calculan sobre
+    cierres diarios, no sobre el precio intradía, así que no se pierde
+    precisión de señal por esto).
+
+    Usa la misma caché manual (`_almacen()`) que `obtener_info()`, en vez de
+    `st.cache_data`, para que `obtener_historicos_lote()` pueda escribir
+    directamente en ella los resultados de una descarga en lote y que este
+    resto del sistema los reutilice sin saber que vinieron de un lote.
+    """
+    clave = f"historico:{ticker}:{periodo}:{intervalo}:{_cubo_mercado()}"
+    cacheado = _cache_leer(clave, TTL_HISTORICO_RESPALDO)
+    if cacheado is not None:
+        return cacheado if isinstance(cacheado, pd.DataFrame) else pd.DataFrame()
+
+    df, error = _pedir(
         lambda: _ticker(ticker).history(period=periodo, interval=intervalo, auto_adjust=False)
     )
     if df is None or df.empty:
+        _cache_guardar(clave, {"_ss_error": [str(error)] if error else ["histórico vacío"]})
         return pd.DataFrame()
     df = df.dropna(subset=["Close"])
     df.index = pd.to_datetime(df.index).tz_localize(None)
+    _cache_guardar(clave, df)
     return df
+
+
+def obtener_historicos_lote(
+    tickers: list[str], periodo: str = "5y", intervalo: str = "1d"
+) -> dict[str, pd.DataFrame]:
+    """Histórico de varios tickers en una sola petición HTTP (`yf.download`),
+    en vez de una llamada `history()` por ticker. Pensada para las vistas
+    que iteran sobre una lista (Rastreador, Favoritos, Cartera, Paper
+    Trading): se llama una vez antes del bucle por ticker para precalentar
+    la caché, y cada función que luego llame a `obtener_historico()` para
+    alguno de esos tickers encuentra la caché ya caliente.
+
+    Solo pide red para los tickers cuya entrada de caché ya ha caducado
+    (según el cubo de calendario); el resto se sirve directo de caché sin
+    tocar la red, así que llamar a esto con tickers ya frescos es barato.
+    """
+    tickers = [t.strip().upper() for t in tickers if t and t.strip()]
+    if not tickers:
+        return {}
+
+    cubo = _cubo_mercado()
+    resultado: dict[str, pd.DataFrame] = {}
+    pendientes: list[str] = []
+    for t in tickers:
+        clave = f"historico:{t}:{periodo}:{intervalo}:{cubo}"
+        cacheado = _cache_leer(clave, TTL_HISTORICO_RESPALDO)
+        if cacheado is not None:
+            resultado[t] = cacheado if isinstance(cacheado, pd.DataFrame) else pd.DataFrame()
+        else:
+            pendientes.append(t)
+
+    if not pendientes:
+        return resultado
+
+    _throttle()
+    _registrar("peticiones_yahoo_lote")
+    try:
+        descarga = yf.download(
+            tickers=pendientes,
+            period=periodo,
+            interval=intervalo,
+            group_by="ticker",
+            auto_adjust=False,
+            threads=True,
+            progress=False,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Fallo en descarga en lote (%d tickers): %s", len(pendientes), e)
+        _registrar("fallos")
+        descarga = None
+
+    for t in pendientes:
+        clave = f"historico:{t}:{periodo}:{intervalo}:{cubo}"
+        df = pd.DataFrame()
+        try:
+            if descarga is not None and t in descarga.columns.get_level_values(0):
+                df = descarga[t].dropna(subset=["Close"])
+                if not df.empty:
+                    df.index = pd.to_datetime(df.index).tz_localize(None)
+        except Exception:  # noqa: BLE001 - un ticker roto no debe tirar el lote
+            df = pd.DataFrame()
+        if df.empty:
+            _cache_guardar(clave, {"_ss_error": ["sin datos en la descarga en lote"]})
+        else:
+            _cache_guardar(clave, df)
+        resultado[t] = df
+    return resultado
+
+
+def obtener_precios_lote(tickers: list[str]) -> dict[str, float | None]:
+    """Último cierre de varios tickers en una sola petición HTTP, reutilizando
+    `obtener_historicos_lote()`. Pensada para vistas de listado (Favoritos,
+    Gestión de Cartera, Paper Trading), donde no hace falta la precisión a
+    segundos de `fast_info` que sí usa `obtener_precio_actual()` en el
+    Análisis Individual — a cambio, N peticiones individuales se convierten
+    en 1 sola para todo el lote.
+    """
+    historicos = obtener_historicos_lote(tickers, periodo="5d")
+    return {
+        t: (float(df["Close"].iloc[-1]) if not df.empty else None)
+        for t, df in historicos.items()
+    }
 
 
 
@@ -221,10 +444,10 @@ def obtener_referencia_mercado(sector: str | None) -> dict:
     Sirve para medir la fuerza relativa del valor: si cae solo o cae con todo
     su sector. Caché a `TTL_REFERENCIA_MERCADO` (12 h), mucho más larga que
     la de un precio en vivo: alimenta un diferencial a 63 sesiones, así que
-    la frescura de 5 minutos de `TTL_PRECIO` no aporta nada y solo multiplica
-    peticiones a Yahoo sin necesidad. Al estar cacheada esta función (y no
-    solo `obtener_historico()` por dentro, que sigue en TTL_PRECIO), un
-    acierto de caché aquí evita también la llamada interna: durante esas
+    la frescura de un precio en vivo no aporta nada y solo multiplica
+    peticiones a Yahoo sin necesidad. Al estar cacheada esta función (además
+    del cubo de calendario que ya protege `obtener_historico()` por dentro),
+    un acierto de caché aquí evita también la llamada interna: durante esas
     12 h, todos los tickers de un mismo sector comparten la misma descarga
     sin volver a tocar la red (en el Rastreador, un lote de 10 tecnológicas
     gasta una sola petición extra en total, no diez, y esa petición no se
@@ -254,14 +477,49 @@ def obtener_precio_actual(ticker: str) -> float | None:
     return float(hist["Close"].iloc[-1]) if not hist.empty else None
 
 
-@st.cache_data(ttl=TTL_FUNDAMENTALES, show_spinner=False)
+def _estados_a_json(estados: dict[str, pd.DataFrame]) -> dict:
+    """Convierte los DataFrames de estados financieros a algo JSON-serializable
+    para la caché L2 (columna jsonb en Supabase). `orient="split"` conserva
+    índice y columnas; `date_format="iso"` evita ambigüedad de fechas."""
+    salida = {}
+    for k, df in estados.items():
+        salida[k] = df.to_json(orient="split", date_format="iso") if isinstance(df, pd.DataFrame) and not df.empty else None
+    return salida
+
+
+def _estados_desde_json(datos: dict) -> dict[str, pd.DataFrame]:
+    salida: dict[str, pd.DataFrame] = {}
+    for k, v in (datos or {}).items():
+        if not v:
+            salida[k] = pd.DataFrame()
+            continue
+        try:
+            salida[k] = pd.read_json(io.StringIO(v), orient="split")
+        except Exception:
+            salida[k] = pd.DataFrame()
+    return salida
+
+
+@st.cache_data(ttl=TTL_ESTADOS_FINANCIEROS, show_spinner=False)
 def obtener_estados_financieros(ticker: str) -> dict:
     """Cuenta de resultados, balance y flujo de caja (anual y trimestral).
 
     Cada propiedad se evalúa una sola vez: `t.income_stmt` dispara descarga la
     primera vez, y escribirlo dos veces (como en `x if x is not None`)
     duplicaba innecesariamente el trabajo.
+
+    Estos datos solo cambian 4 veces al año (publicación de resultados), así
+    que además del TTL largo en memoria (L1, `TTL_ESTADOS_FINANCIEROS`) se
+    respaldan en Supabase (L2): si el contenedor de Streamlit se reinicia
+    por inactividad y pierde la caché en memoria, esta función encuentra el
+    dato en Supabase antes de volver a pedirlo a Yahoo.
     """
+    clave_l2 = f"estados:{ticker}"
+    l2 = bd_supabase.cache_l2_leer(clave_l2, TTL_ESTADOS_FINANCIEROS)
+    if l2 is not None:
+        _registrar("aciertos_cache_l2")
+        return _estados_desde_json(l2)
+
     t = _ticker(ticker)
     campos = {
         "resultados": lambda: t.income_stmt,
@@ -273,6 +531,9 @@ def obtener_estados_financieros(ticker: str) -> dict:
     for nombre, obtener in campos.items():
         valor, _ = _pedir(obtener, intentos=2)
         salida[nombre] = valor if isinstance(valor, pd.DataFrame) else pd.DataFrame()
+
+    if any(not df.empty for df in salida.values()):
+        bd_supabase.cache_l2_guardar(clave_l2, _estados_a_json(salida))
     return salida
 
 
@@ -462,26 +723,57 @@ def _finnhub(ruta: str, params: dict) -> dict | list | None:
     token = _clave("FINNHUB_API_KEY")
     if not token:
         return None
+    _registrar("peticiones_finnhub")
     try:
         r = requests.get(
             f"{FINNHUB_BASE}{ruta}", params={**params, "token": token}, timeout=12
         )
         if r.status_code != 200:
+            _registrar("fallos")
             return None
         return r.json()
     except Exception:
+        _registrar("fallos")
         return None
 
 
 @st.cache_data(ttl=TTL_FUNDAMENTALES, show_spinner=False)
 def obtener_perfil_finnhub(ticker: str) -> dict:
+    """Perfil de empresa de Finnhub: sector, nombre, moneda de respaldo.
+
+    Se usa como L2 en Supabase porque, aunque técnicamente puede cambiar
+    (cambio de sector, delisting), en la práctica es casi tan estable como
+    los estados financieros — no hay motivo para perderlo en cada reinicio
+    del contenedor. `obtener_paquete()` además solo llama a esta función
+    cuando `info` de yfinance no trae ya sector/nombre/moneda, que es la
+    mayoría de los casos para tickers grandes/medianos.
+    """
+    clave_l2 = f"perfil_finnhub:{ticker}"
+    l2 = bd_supabase.cache_l2_leer(clave_l2, TTL_ESTADOS_FINANCIEROS)
+    if l2 is not None:
+        _registrar("aciertos_cache_l2")
+        return l2
+
     datos = _finnhub("/stock/profile2", {"symbol": ticker})
-    return datos if isinstance(datos, dict) else {}
+    salida = datos if isinstance(datos, dict) else {}
+    if salida:
+        bd_supabase.cache_l2_guardar(clave_l2, salida)
+    return salida
 
 
 # =================================================================== SEC EDGAR ==
 @st.cache_data(ttl=86400, show_spinner=False)
 def obtener_cik(ticker: str) -> str | None:
+    """CIK del ticker en SEC EDGAR. Casi nunca cambia (solo si la empresa
+    se da de baja/alta), así que se respalda en L2 con un horizonte largo:
+    la petición evitada es cara (descarga el listado completo de tickers
+    de la SEC, no una consulta puntual)."""
+    clave_l2 = f"cik:{ticker}"
+    l2 = bd_supabase.cache_l2_leer(clave_l2, TTL_ESTADOS_FINANCIEROS * 7)
+    if l2 is not None:
+        _registrar("aciertos_cache_l2")
+        return l2 or None
+
     try:
         r = requests.get(
             "https://www.sec.gov/files/company_tickers.json",
@@ -492,7 +784,9 @@ def obtener_cik(ticker: str) -> str | None:
             return None
         for fila in r.json().values():
             if fila.get("ticker", "").upper() == ticker.upper():
-                return str(fila["cik_str"]).zfill(10)
+                cik = str(fila["cik_str"]).zfill(10)
+                bd_supabase.cache_l2_guardar(clave_l2, cik)
+                return cik
     except Exception:
         return None
     return None
@@ -575,18 +869,37 @@ def obtener_estimaciones_analistas(ticker: str) -> dict:
 
 
 # ============================================================ agregador único ==
-def obtener_paquete(ticker: str) -> dict:
+def obtener_paquete(ticker: str, incluir_noticias: bool = True) -> dict:
     """Recopila en una sola estructura todo lo necesario para el análisis.
 
-    Se evita cualquier petición prescindible: el precio solo se pide aparte si
-    no venía ya en `info` o en el histórico, y los datos de SEC EDGAR (8
-    peticiones) se han sacado de aquí porque ningún módulo de cálculo los
-    consumía; se piden bajo demanda con `obtener_hechos_sec(ticker)`.
+    Se evita cualquier petición prescindible:
+      * El precio solo se pide aparte si no venía ya en `info` o en el
+        histórico.
+      * Los datos de SEC EDGAR (8 peticiones) se han sacado de aquí porque
+        ningún módulo de cálculo los consumía; se piden bajo demanda con
+        `obtener_hechos_sec(ticker)`.
+      * El perfil de Finnhub (`obtener_perfil_finnhub`) solo se pide si
+        `info` de yfinance no trae ya sector/nombre/moneda — el caso
+        mayoritario para tickers grandes/medianos no necesita ese respaldo.
+      * `incluir_noticias=False` (usado por el Rastreador) se salta
+        `obtener_noticias()` por completo: no alimenta ningún cálculo
+        (Calidad, Valoración, Timing), es puramente informativa para la
+        vista de Análisis Individual, así que pedirla en un escaneo por
+        lote de 10 tickers solo tira peticiones a la basura.
+
+    Las llamadas que sí van a Finnhub (perfil, earnings, consenso, y
+    noticias si se incluyen) se lanzan en paralelo con un hilo cada una:
+    Finnhub no comparte límite de tasa con Yahoo, así que esto no reduce el
+    número de peticiones pero sí recorta el tiempo de espera de un análisis
+    (antes en serie, una detrás de otra). Los estados financieros y las
+    estimaciones de analistas se dejan fuera del hilo compartido porque son
+    yfinance puro y sí compiten por el mismo throttle que el histórico.
     """
     ticker = ticker.strip().upper()
     info = obtener_info(ticker)
     historico = obtener_historico(ticker)
-    perfil = obtener_perfil_finnhub(ticker)
+    estados = obtener_estados_financieros(ticker)
+    estimaciones = obtener_estimaciones_analistas(ticker)
 
     existe = bool(info.get("longName") or info.get("shortName")) or not historico.empty
 
@@ -597,6 +910,22 @@ def obtener_paquete(ticker: str) -> dict:
         precio = float(historico["Close"].iloc[-1])
     if not es_valido(precio):
         precio = obtener_precio_actual(ticker)
+
+    necesita_perfil = not (
+        info.get("sector") and (info.get("longName") or info.get("shortName")) and info.get("currency")
+    )
+
+    tareas: dict[str, object] = {}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        if necesita_perfil:
+            tareas["perfil"] = ex.submit(obtener_perfil_finnhub, ticker)
+        tareas["earnings"] = ex.submit(obtener_earnings, ticker)
+        tareas["consenso"] = ex.submit(obtener_consenso, ticker)
+        if incluir_noticias:
+            tareas["noticias"] = ex.submit(obtener_noticias, ticker)
+        resultados = {clave: futuro.result() for clave, futuro in tareas.items()}
+
+    perfil = resultados.get("perfil", {})
 
     return {
         "ticker": ticker,
@@ -610,11 +939,13 @@ def obtener_paquete(ticker: str) -> dict:
         "sector": info.get("sector") or perfil.get("finnhubIndustry"),
         "industria": info.get("industry"),
         "descripcion": info.get("longBusinessSummary"),
-        "estados": obtener_estados_financieros(ticker),
-        "earnings": obtener_earnings(ticker),
-        "noticias": obtener_noticias(ticker),
-        "consenso": obtener_consenso(ticker),
-        "estimaciones": obtener_estimaciones_analistas(ticker),
+        "estados": estados,
+        "earnings": resultados.get(
+            "earnings", {"ultimo": None, "proxima_fecha": None, "historial": [], "fuente": None}
+        ),
+        "noticias": resultados.get("noticias", []),
+        "consenso": resultados.get("consenso", {}),
+        "estimaciones": estimaciones,
         "fx_usd_eur": obtener_fx_usd_eur(),
         "generado": datetime.utcnow().isoformat(timespec="seconds"),
     }

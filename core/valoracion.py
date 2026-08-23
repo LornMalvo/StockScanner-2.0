@@ -114,7 +114,7 @@ def _base_fcf_normalizada(fcf_serie: pd.Series | None, info: dict, estados: dict
         return None, "sin FCF"
     ultimo = ultimos[0]
     if ultimo <= 0:
-        return None, f"último FCF negativo ({ultimo / 1e6:,.0f} M$)"
+        return None, f"último FCF negativo ({ultimo / 1e6:,.0f} M\\$)"
     if len(ultimos) < 3:
         return ultimo, "último ejercicio (serie corta)"
 
@@ -324,14 +324,14 @@ def valorar_dcf(paquete: dict) -> tuple[float | None, dict]:
             "valor_empresa": valor_presente,
             "valor_accion": por_accion,
             "formula": (
-                f"FCF base {fcf_base / 1e6:,.0f} M$ ({origen_fcf}) → FCFF (desapalancado) "
-                f"{fcff / 1e6:,.0f} M$ → proyectado {DCF_ANIOS} años con crecimiento inicial "
+                f"FCF base {fcf_base / 1e6:,.0f} M\\$ ({origen_fcf}) → FCFF (desapalancado) "
+                f"{fcff / 1e6:,.0f} M\\$ → proyectado {DCF_ANIOS} años con crecimiento inicial "
                 f"{crecimiento * 100:.1f}% ({origen_g}) decayendo a terminal {DCF_G_TERMINAL * 100:.1f}%, "
                 f"descontado a WACC ponderado {wacc * 100:.1f}% (Ke {ke * 100:.1f}% / Kd {kd * 100:.1f}%, "
                 f"{origen_kd}). Valor terminal a {multiplo_terminal_real:.1f}× el flujo del año "
                 f"{DCF_ANIOS}{' (topado)' if topado else ''}. "
-                f"Equity = VP flujos ({valor_presente / 1e6:,.0f} M$) + caja ({caja / 1e6:,.0f} M$) "
-                f"− deuda ({deuda / 1e6:,.0f} M$), ÷ {acciones / 1e6:,.0f} M acciones → {por_accion:,.2f} $"
+                f"Equity = VP flujos ({valor_presente / 1e6:,.0f} M\\$) + caja ({caja / 1e6:,.0f} M\\$) "
+                f"− deuda ({deuda / 1e6:,.0f} M\\$), ÷ {acciones / 1e6:,.0f} M acciones → {por_accion:,.2f} \\$"
             ),
         }
     )
@@ -412,7 +412,7 @@ def valorar_multiplos(paquete: dict) -> tuple[float | None, dict]:
             "formula": (
                 f"PER justo = {PESO_PER_SECTOR * 100:.0f}% sector + {(1 - PESO_PER_SECTOR) * 100:.0f}% "
                 f"histórico [ {' ; '.join(partes)} ] = {per_justo:.1f}× "
-                f"× BPA {bpa_origen} {bpa:,.2f} $ → {per_justo * bpa:,.2f} $"
+                f"× BPA {bpa_origen} {bpa:,.2f} \\$ → {per_justo * bpa:,.2f} \\$"
             ),
         }
     )
@@ -471,7 +471,7 @@ def valorar_peg(paquete: dict) -> tuple[float | None, dict]:
             "valor_accion": valor,
             "formula": (
                 f"PER justo = PEG objetivo {PEG_OBJETIVO:.1f} × crecimiento {g * 100:.1f}% "
-                f"= {per_justo:.1f}× · BPA estimado +1a {bpa:,.2f} $ → {valor:,.2f} $"
+                f"= {per_justo:.1f}× · BPA estimado +1a {bpa:,.2f} \\$ → {valor:,.2f} \\$"
             ),
         }
     )
@@ -545,9 +545,9 @@ def valorar_ev_ebitda(paquete: dict) -> tuple[float | None, dict]:
             "equity_value": equity_value,
             "valor_accion": por_accion,
             "formula": (
-                f"[ EBITDA {ebitda / 1e6:,.0f} M$ × múltiplo {origen_multiplo} {multiplo:.1f}× "
-                f"− deuda neta {deuda_neta / 1e6:,.0f} M$ ] ÷ {acciones / 1e6:,.0f} M acciones "
-                f"→ {por_accion:,.2f} $"
+                f"[ EBITDA {ebitda / 1e6:,.0f} M\\$ × múltiplo {origen_multiplo} {multiplo:.1f}× "
+                f"− deuda neta {deuda_neta / 1e6:,.0f} M\\$ ] ÷ {acciones / 1e6:,.0f} M acciones "
+                f"→ {por_accion:,.2f} \\$"
             ),
         }
     )
@@ -683,8 +683,8 @@ def calcular_fair_value(paquete: dict) -> dict:
             original = info_banda["excluidos"][clave]
             det["banda_cordura"] = {"accion": "excluido", "valor_original": original, "ancla": ancla}
             det["notas"].append(
-                f"Banda de cordura: {original:,.2f} $ se desvía demasiado del consenso/mediana "
-                f"({ancla:,.2f} $) para ser fiable; método excluido de esta valoración."
+                f"Banda de cordura: {original:,.2f} \\$ se desvía demasiado del consenso/mediana "
+                f"({ancla:,.2f} \\$) para ser fiable; método excluido de esta valoración."
             )
         elif clave in info_banda["recortes"]:
             borde, original, recortado = info_banda["recortes"][clave]
@@ -693,7 +693,7 @@ def calcular_fair_value(paquete: dict) -> dict:
                 "valor_original": original, "valor_recortado": recortado, "ancla": ancla,
             }
             det["notas"].append(
-                f"Banda de cordura: recortado de {original:,.2f} $ a {recortado:,.2f} $ "
+                f"Banda de cordura: recortado de {original:,.2f} \\$ a {recortado:,.2f} \\$ "
                 f"({'techo' if borde == 'techo' else 'suelo'} de la banda respecto al consenso/mediana)."
             )
 
@@ -717,7 +717,7 @@ def calcular_fair_value(paquete: dict) -> dict:
                     "formula": (
                         f"Precio objetivo medio de {n_analistas:.0f} analistas"
                         + (" (⩾10 → peso doble en la media)" if multiplicador == 2.0 else "")
-                        + f" → {objetivo:,.2f} $"
+                        + f" → {objetivo:,.2f} \\$"
                         if es_valido(objetivo) and es_valido(n_analistas)
                         else None
                     ),
