@@ -329,6 +329,14 @@ CONFLUENCIA_ATR_LEJOS = 4.0
 CONFLUENCIA_PCT_CERCA = 0.02
 CONFLUENCIA_PCT_LEJOS = 0.15
 
+# ------------------------- cruce de medias (Golden Cross / Death Cross) ------
+# Informativo, SIN peso propio en PESOS_TIMING (ver docstring de
+# `indicadores.cruce_medias`): la fuerza y dirección que revela ya las
+# capturan el ADX direccional y las distancias mm50/mm200.
+CRUCE_VENTANA_BUSQUEDA = 120   # sesiones hacia atrás para localizar el último cruce
+CRUCE_VENTANA_PENDIENTE = 10   # sesiones para estimar si las medias convergen
+CRUCE_PROXIMO_PCT = 3.0        # distancia MM50-MM200 (%) por debajo de la cual se avisa de cruce próximo
+
 # El enunciado exige salud fundamental >= 60 para considerar buen timing.
 SALUD_MINIMA_TIMING = 60
 TIMING_TOPE_SIN_SALUD = 59  # con salud < 60 el timing no puede superar "VIGILAR"
@@ -646,6 +654,14 @@ CURRENT_RATIO_MEDIANO_SECTOR = {
 
 # ------------------------------------------------------------------ caché ----
 TTL_PRECIO = 300        # 5 min
+# El ETF sectorial/de mercado de referencia (fuerza relativa del timing) no
+# necesita la frescura de un precio en vivo: alimenta un diferencial de
+# rentabilidad a 63 SESIONES, así que una actualización diaria sobra de
+# sobra. Con TTL_PRECIO (5 min) cada análisis fuera de esa ventana repetía
+# la petición a Yahoo sin necesidad, en un endpoint ya sensible al límite
+# por IP compartida de Streamlit Community Cloud. 12 h cubre una sesión de
+# trabajo completa sin arrastrar datos de más de un día hábil de retraso.
+TTL_REFERENCIA_MERCADO = 43200  # 12 h
 TTL_FUNDAMENTALES = 3600  # 1 h
 TTL_NOTICIAS = 900      # 15 min
 TTL_FX = 600            # 10 min
