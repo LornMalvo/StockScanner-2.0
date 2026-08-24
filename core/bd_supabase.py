@@ -27,6 +27,7 @@ T_CARTERA = "cartera_posiciones"
 T_CARTERA_OPS = "cartera_operaciones"
 T_PAPER = "paper_trading_posiciones"
 T_NIVELES = "paper_trading_niveles"
+T_EJECUCIONES = "paper_trading_ejecuciones"
 T_TRADUCCIONES = "descripciones_traducidas"
 T_CACHE_API = "cache_api"
 
@@ -398,66 +399,13 @@ def actualizar_divisa_cotizacion(posicion_id, divisa: str) -> bool:
 
 
 # --------------------------------------------------------- paper trading ----
-def abrir_paper_trade(ticker: str, plan: dict, contexto: dict) -> bool:
-    """Persiste la ejecución del plan DCA y sus niveles asociados."""
-    sb = cliente()
-    if sb is None:
-        return False
-    try:
-        posicion = (
-            sb.table(T_PAPER)
-            .insert(
-                {
-                    "usuario_id": _usuario(),
-                    "ticker": ticker.upper(),
-                    "estado": "abierta",
-                    "precio_apertura": plan.get("precio_referencia"),
-                    "precio_medio_estimado": plan.get("precio_medio_estimado"),
-                    "objetivo_medio_estimado": plan.get("objetivo_medio_estimado"),
-                    "stop_loss": (plan.get("stop_loss") or {}).get("precio"),
-                    "puntuacion_calidad": contexto.get("puntuacion_calidad"),
-                    "puntuacion_timing": contexto.get("puntuacion_timing"),
-                    "veredicto": contexto.get("veredicto"),
-                    "abierta_en": _ahora(),
-                }
-            )
-            .execute()
-        )
-        posicion_id = (posicion.data or [{}])[0].get("id")
-        if not posicion_id:
-            return True
-
-        niveles = [
-            {
-                "posicion_id": posicion_id,
-                "tipo": "entrada",
-                "nivel": n["nivel"],
-                "precio": n["precio"],
-                "peso": n["peso_capital"],
-                "ejecutado": n["nivel"] == 1,
-                "motivos": ", ".join(n["motivos"]),
-            }
-            for n in plan.get("entradas", [])
-        ] + [
-            {
-                "posicion_id": posicion_id,
-                "tipo": "salida",
-                "nivel": n["nivel"],
-                "precio": n["precio"],
-                "peso": n["peso_posicion"],
-                "ejecutado": False,
-                "motivos": ", ".join(n["motivos"]),
-            }
-            for n in plan.get("salidas", [])
-        ]
-        if niveles:
-            sb.table(T_NIVELES).insert(niveles).execute()
-        return True
-    except Exception:
-        return False
-
-
-def listar_paper_trades(estado: str | None = "abierta") -> list[dict]:
+# Modelo: `paper_trading_niveles` es el PLAN (estático, congelado al
+# guardar). `paper_trading_ejecuciones` es el LIBRO DE EVENTOS reales — igual
+# que `cartera_operaciones` para la cartera real. `core/paper_trading.py`
+# combina ambos; aquí solo hay CRUD y la sincronización del campo `estado`
+# denormalizado en la cabecera.
+def listar_paper_trades(estado: str | None = None) -> list[dict]:
+    """Cabeceras de plan. `estado=None` devuelve todas."""
     sb = cliente()
     if sb is None:
         return []
@@ -468,6 +416,53 @@ def listar_paper_trades(estado: str | None = "abierta") -> list[dict]:
         return q.order("abierta_en", desc=True).execute().data or []
     except Exception:
         return []
+
+
+def plan_activo(ticker: str) -> dict | None:
+    """Plan no terminado (ni cerrado ni descartado) para ese ticker, si lo
+    hay. Evita guardar dos planes simulados vivos a la vez sobre el mismo
+    valor, que confundiría el seguimiento."""
+    sb = cliente()
+    if sb is None:
+        return None
+    try:
+        r = (
+            sb.table(T_PAPER)
+            .select("*")
+            .eq("usuario_id", _usuario())
+            .eq("ticker", ticker.upper())
+            .not_.in_("estado", ["cerrada", "descartada"])
+            .limit(1)
+            .execute()
+        )
+        filas = r.data or []
+        return filas[0] if filas else None
+    except Exception:
+        return None
+
+
+def niveles_por_posicion() -> dict:
+    """Todos los niveles del usuario, agrupados por `posicion_id` (1 petición)."""
+    sb = cliente()
+    if sb is None:
+        return {}
+    try:
+        filas = (
+            sb.table(T_NIVELES)
+            .select("*")
+            .eq("usuario_id", _usuario())
+            .order("tipo")
+            .order("nivel")
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return {}
+    agrupadas: dict = {}
+    for n in filas:
+        agrupadas.setdefault(n.get("posicion_id"), []).append(n)
+    return agrupadas
 
 
 def listar_niveles(posicion_id) -> list[dict]:
@@ -489,19 +484,326 @@ def listar_niveles(posicion_id) -> list[dict]:
         return []
 
 
-def cerrar_paper_trade(posicion_id, precio_cierre: float, motivo: str = "manual") -> bool:
+def ejecuciones_por_posicion() -> dict:
+    """Todas las ejecuciones del usuario, agrupadas por `posicion_id`."""
+    sb = cliente()
+    if sb is None:
+        return {}
+    try:
+        filas = (
+            sb.table(T_EJECUCIONES)
+            .select("*")
+            .eq("usuario_id", _usuario())
+            .order("fecha")
+            .order("id")
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return {}
+    agrupadas: dict = {}
+    for e in filas:
+        agrupadas.setdefault(e.get("posicion_id"), []).append(e)
+    return agrupadas
+
+
+def listar_ejecuciones(posicion_id) -> list[dict]:
+    sb = cliente()
+    if sb is None:
+        return []
+    try:
+        return (
+            sb.table(T_EJECUCIONES)
+            .select("*")
+            .eq("posicion_id", posicion_id)
+            .order("fecha")
+            .order("id")
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return []
+
+
+def guardar_plan_paper_trading(ticker: str, plan: dict, contexto: dict, capital_asignado: float) -> int | None:
+    """Congela el plan DCA como posición en seguimiento (`estado='vigilancia'`).
+
+    `contexto` trae la foto del análisis en el momento de guardar: `moneda`
+    (para poder convertir ejecuciones futuras a EUR), `fair_value`,
+    `upside_pct`, `puntuacion_calidad`, `puntuacion_timing`, `veredicto`.
+    Devuelve el id de la posición creada, o None si falla.
+    """
+    sb = cliente()
+    if sb is None:
+        return None
+    ticker = ticker.upper()
+    try:
+        creada = (
+            sb.table(T_PAPER)
+            .insert(
+                {
+                    "usuario_id": _usuario(),
+                    "ticker": ticker,
+                    "estado": "vigilancia",
+                    "precio_referencia": plan.get("precio_referencia"),
+                    "fair_value": contexto.get("fair_value"),
+                    "upside_pct": contexto.get("upside_pct"),
+                    "capital_asignado": float(capital_asignado),
+                    "divisa_cotizacion": contexto.get("moneda"),
+                    "precio_medio_estimado": plan.get("precio_medio_estimado"),
+                    "objetivo_medio_estimado": plan.get("objetivo_medio_estimado"),
+                    "stop_loss": (plan.get("stop_loss") or {}).get("precio"),
+                    "puntuacion_calidad": contexto.get("puntuacion_calidad"),
+                    "puntuacion_timing": contexto.get("puntuacion_timing"),
+                    "veredicto": contexto.get("veredicto"),
+                    "abierta_en": _ahora(),
+                }
+            )
+            .execute()
+        )
+        posicion_id = (creada.data or [{}])[0].get("id")
+        if not posicion_id:
+            return None
+
+        niveles = [
+            {
+                "usuario_id": _usuario(),
+                "posicion_id": posicion_id,
+                "tipo": "entrada",
+                "nivel": n["nivel"],
+                "precio": n["precio"],
+                "peso": n["peso_capital"],
+                "ejecutado": False,
+                "motivos": ", ".join(n["motivos"]),
+            }
+            for n in plan.get("entradas", [])
+        ] + [
+            {
+                "usuario_id": _usuario(),
+                "posicion_id": posicion_id,
+                "tipo": "salida",
+                "nivel": n["nivel"],
+                "precio": n["precio"],
+                "peso": n["peso_posicion"],
+                "ejecutado": False,
+                "motivos": ", ".join(n["motivos"]),
+            }
+            for n in plan.get("salidas", [])
+        ]
+        stop = plan.get("stop_loss") or {}
+        if stop.get("precio") is not None:
+            niveles.append(
+                {
+                    "usuario_id": _usuario(),
+                    "posicion_id": posicion_id,
+                    "tipo": "stop",
+                    "nivel": 1,
+                    "precio": stop["precio"],
+                    "peso": None,
+                    "ejecutado": False,
+                    "motivos": stop.get("base"),
+                }
+            )
+        if niveles:
+            sb.table(T_NIVELES).insert(niveles).execute()
+        return posicion_id
+    except Exception:
+        return None
+
+
+def registrar_ejecucion(
+    posicion_id,
+    ticker: str,
+    tipo: str,
+    tipo_ejecucion: str,
+    acciones: float,
+    precio: float,
+    fecha,
+    fx_usd_eur,
+    nivel_id=None,
+    notas: str | None = None,
+) -> bool:
+    """Añade un evento real al libro (una entrada o una salida ejecutada).
+
+    `fx_usd_eur` debe llegar ya resuelto (o None si la divisa es EUR): la
+    interfaz es quien decide si hay tipo de cambio antes de llamar aquí, para
+    no guardar nunca una ejecución que después no se pueda convertir a euros.
+    """
     sb = cliente()
     if sb is None:
         return False
     try:
-        sb.table(T_PAPER).update(
+        sb.table(T_EJECUCIONES).insert(
             {
-                "estado": "cerrada",
-                "precio_cierre": precio_cierre,
-                "motivo_cierre": motivo,
-                "cerrada_en": _ahora(),
+                "usuario_id": _usuario(),
+                "posicion_id": posicion_id,
+                "nivel_id": nivel_id,
+                "ticker": ticker.upper(),
+                "tipo": tipo,
+                "tipo_ejecucion": tipo_ejecucion,
+                "acciones": float(acciones),
+                "precio": float(precio),
+                "fx_usd_eur": fx_usd_eur,
+                "fecha": str(fecha),
+                "notas": notas,
+                "creado_en": _ahora(),
             }
-        ).eq("id", posicion_id).execute()
+        ).execute()
+        if nivel_id is not None:
+            sb.table(T_NIVELES).update(
+                {"ejecutado": True, "ejecutado_en": _ahora()}
+            ).eq("id", nivel_id).execute()
+        sincronizar_estado_paper(posicion_id)
+        return True
+    except Exception:
+        return False
+
+
+def cerrar_manual(
+    posicion_id, ticker: str, acciones: float, precio: float, fecha, fx_usd_eur, motivo: str = "Cierre manual"
+) -> bool:
+    """Vende sin pasar por un nivel de salida planificado (p. ej. stop loss
+    saltado, o decisión de cerrar antes de tiempo)."""
+    return registrar_ejecucion(
+        posicion_id,
+        ticker,
+        "salida",
+        "mercado",
+        acciones,
+        precio,
+        fecha,
+        fx_usd_eur,
+        nivel_id=None,
+        notas=motivo,
+    )
+
+
+def eliminar_ejecucion(ejecucion_id, posicion_id, nivel_id=None) -> bool:
+    """Corrige un registro erróneo. Si era la única ejecución de su nivel,
+    el nivel vuelve a quedar pendiente."""
+    sb = cliente()
+    if sb is None:
+        return False
+    try:
+        sb.table(T_EJECUCIONES).delete().eq("id", ejecucion_id).execute()
+        if nivel_id is not None:
+            quedan = (
+                sb.table(T_EJECUCIONES)
+                .select("id")
+                .eq("nivel_id", nivel_id)
+                .limit(1)
+                .execute()
+                .data
+            )
+            if not quedan:
+                sb.table(T_NIVELES).update({"ejecutado": False, "ejecutado_en": None}).eq(
+                    "id", nivel_id
+                ).execute()
+        sincronizar_estado_paper(posicion_id)
+        return True
+    except Exception:
+        return False
+
+
+def sincronizar_estado_paper(posicion_id) -> None:
+    """Recalcula `estado` (y, si cierra, `cerrada_en`/`precio_cierre`/
+    `motivo_cierre`) a partir del libro de niveles + ejecuciones."""
+    from core import cartera as _cartera
+    from core import paper_trading as _pt
+
+    sb = cliente()
+    if sb is None:
+        return
+    try:
+        niveles = listar_niveles(posicion_id)
+        ejecuciones = listar_ejecuciones(posicion_id)
+        entradas = [n for n in niveles if n.get("tipo") == "entrada"]
+        n_ent_ej = sum(1 for n in entradas if n.get("ejecutado"))
+
+        # Conteo de acciones vivas: no depende de la divisa (una acción es
+        # una acción), así que se usa el precio nativo tal cual, sin
+        # necesidad de convertir a euros solo para esta comprobación.
+        operaciones_nativas = [
+            {
+                "id": e.get("id"),
+                "tipo": "compra" if e.get("tipo") == "entrada" else "venta",
+                "acciones": e.get("acciones"),
+                "precio": e.get("precio"),
+                "comisiones": 0.0,
+                "fecha": e.get("fecha"),
+            }
+            for e in ejecuciones
+        ]
+        acciones_vivas = _cartera.resumen_posicion(operaciones_nativas)["acciones"]
+        hubo = bool(ejecuciones)
+        hubo_venta = any(e.get("tipo") == "salida" for e in ejecuciones)
+        estado = _pt.derivar_estado(len(entradas), n_ent_ej, hubo_venta, acciones_vivas, hubo)
+
+        actualizacion = {"estado": estado}
+        if estado == "cerrada":
+            ultima = ejecuciones[-1] if ejecuciones else {}
+            actualizacion["cerrada_en"] = ultima.get("fecha")
+            actualizacion["precio_cierre"] = ultima.get("precio")
+            actualizacion["motivo_cierre"] = ultima.get("notas") or (
+                "Plan completado" if ultima.get("nivel_id") else "Cierre manual"
+            )
+        else:
+            actualizacion["cerrada_en"] = None
+            actualizacion["precio_cierre"] = None
+            actualizacion["motivo_cierre"] = None
+
+        sb.table(T_PAPER).update(actualizacion).eq("id", posicion_id).execute()
+    except Exception:
+        return
+
+
+def descartar_plan(posicion_id) -> bool:
+    """Solo válido desde `vigilancia` (nada ejecutado todavía). No se
+    comprueba aquí de forma estricta más allá de confiar en que la interfaz
+    solo ofrece este botón cuando el estado lo permite; como defensa mínima,
+    se rechaza si ya hay ejecuciones registradas."""
+    sb = cliente()
+    if sb is None:
+        return False
+    try:
+        if listar_ejecuciones(posicion_id):
+            return False
+        sb.table(T_PAPER).update({"estado": "descartada"}).eq("id", posicion_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def eliminar_plan(posicion_id) -> bool:
+    sb = cliente()
+    if sb is None:
+        return False
+    try:
+        sb.table(T_PAPER).delete().eq("id", posicion_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def actualizar_capital_asignado(posicion_id, capital: float) -> bool:
+    sb = cliente()
+    if sb is None:
+        return False
+    try:
+        sb.table(T_PAPER).update({"capital_asignado": float(capital)}).eq("id", posicion_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def marcar_notificado_nivel1(posicion_id) -> bool:
+    sb = cliente()
+    if sb is None:
+        return False
+    try:
+        sb.table(T_PAPER).update({"notificado_nivel1": True}).eq("id", posicion_id).execute()
         return True
     except Exception:
         return False
