@@ -114,11 +114,20 @@ def _en_rango(
     Se filtra antes y no después a propósito: si se filtrara al final, un
     candidato lejanísimo seguiría aportando su peso a la zona vecina y la
     inflaría sin representar evidencia utilizable.
+
+    EXCEPCIÓN: los candidatos marcados con `siempre=True` nunca se descartan.
+    Hoy son el máximo y el mínimo de 52 semanas, que no son ruido estadístico
+    como un pivote suelto sino LA referencia anual que cualquiera mira antes
+    de comprar. En valores muy tranquilos el rango (12 x ATR) se queda corto y
+    los dejaba fuera —caso detectado en CMCL—, que es justo el nivel que no
+    puede faltar. Se exime este candidato concreto en vez de ensanchar el
+    rango para todos, que reabriría la puerta al ruido que el rango filtra.
     """
     limite = _rango_maximo(precio, atr, techo, suelo)
     return [
         c for c in candidatos
-        if es_valido(c.get("precio")) and abs(c["precio"] - precio) / precio <= limite
+        if es_valido(c.get("precio"))
+        and (c.get("siempre") or abs(c["precio"] - precio) / precio <= limite)
     ]
 
 
@@ -391,9 +400,10 @@ def _candidatos_soporte(precio: float, tec: dict) -> list[dict]:
     c += _candidatos_diagonales(tec, precio, arriba=False)
     c += _candidatos_redondos(tec, precio, arriba=False)
 
+    # `siempre`: exento del filtro de rango de trabajo (ver `_en_rango`).
     v = _num(tec.get("min_52s"))
     if v is not None and v < precio:
-        c.append({"precio": v, "peso": 1.5, "motivo": "Mínimo de 52 semanas"})
+        c.append({"precio": v, "peso": 1.5, "motivo": "Mínimo de 52 semanas", "siempre": True})
     return c
 
 
@@ -406,13 +416,16 @@ def _candidatos_resistencia(precio: float, tec: dict, fair_value: float | None) 
 
     c += _candidatos_pivotes(tec, precio, "resistencias")
 
-    for clave, etiqueta, peso in (
-        ("max_52s", "Máximo de 52 semanas", 2.0),
-        ("ath", "Máximo histórico", 2.2),
+    # El máximo de 52 semanas va exento del filtro de rango (`siempre`); el
+    # máximo histórico NO, porque en un valor hundido puede estar a un +400% y
+    # ahí sí es ruido para un plan de salidas.
+    for clave, etiqueta, peso, siempre in (
+        ("max_52s", "Máximo de 52 semanas", 2.0, True),
+        ("ath", "Máximo histórico", 2.2, False),
     ):
         v = _num(tec.get(clave))
         if v is not None and v > precio:
-            c.append({"precio": v, "peso": peso, "motivo": etiqueta})
+            c.append({"precio": v, "peso": peso, "motivo": etiqueta, "siempre": siempre})
 
     for gap in tec.get("gaps", []):
         desde, hasta = _num(gap.get("desde")), _num(gap.get("hasta"))
