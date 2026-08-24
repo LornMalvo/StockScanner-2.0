@@ -384,11 +384,112 @@ EXCLUSION_TECHO = 2.5
 BANDA_MIN_ANALISTAS = 5
 
 # ------------------------------------------------------- plan DCA (Bloque 6) --
-DCA_SEPARACION_MIN_ENTRADAS = 0.10  # 10% mínimo entre niveles de entrada
+DCA_SEPARACION_MIN_ENTRADAS = 0.10  # RESPALDO: solo se usa si no hay ATR válido
 DCA_PESOS_ENTRADA = [0.40, 0.35, 0.25]
 DCA_PESOS_SALIDA = [0.35, 0.35, 0.30]
 DCA_STOP_ATR_MULT = 2.5
 DCA_STOP_MAX_CAIDA = 0.30  # el stop nunca se coloca a más de un 30% del nivel 1
+# El tope anterior (30% bajo el nivel 1) podía dejar el stop POR ENCIMA del
+# último nivel de entrada, es decir, un plan que se detiene antes de terminar
+# de ejecutarse. Este margen fuerza que el stop quede siempre por debajo de la
+# entrada más baja.
+DCA_STOP_MARGEN_MIN = 0.02
+
+# ================== motor de confluencia de soportes/resistencias =============
+# Rediseño completo del motor DCA. El diagnóstico previo (simulado sobre NBIX y
+# GRAB) fue que los umbrales FIJOS descartaban zonas de confluencia fuerte por
+# márgenes de 0,1-0,3 puntos porcentuales, tanto al fusionar candidatos como al
+# elegir los 3 niveles finales. Todo lo que aquí se parametriza sustituye a
+# umbrales fijos por magnitudes adaptativas al ATR de cada valor.
+
+# ---------------------------------------------- agrupación por densidad -------
+# Ya no hay "tolerancia de cluster" binaria (el antiguo 2,5% fijo). Cada
+# candidato es una campana gaussiana de altura = su peso y anchura = SIGMA.
+# Se suman todas las campanas y las zonas de confluencia son los máximos
+# locales de la curva resultante: dos candidatos cercanos en términos de ATR
+# generan un único pico aunque su distancia en % supere cualquier umbral.
+CONFLUENCIA_SIGMA_ATR = 0.45      # anchura de la campana, en múltiplos de ATR(14)
+CONFLUENCIA_SIGMA_PCT = 0.018     # respaldo en % del precio cuando no hay ATR
+CONFLUENCIA_SIGMA_MAX_PCT = 0.030 # techo: con ATR muy alto las campanas fundirían todo
+CONFLUENCIA_SIGMA_MIN_PCT = 0.004 # suelo: con ATR degenerado no se fundiría nada
+CONFLUENCIA_REJILLA = 800         # nº de puntos de la rejilla de precios
+CONFLUENCIA_PESO_MIN_ZONA = 0.8   # zonas por debajo de este peso se descartan
+
+# --------------------------------------------- rango de trabajo del motor -----
+# Al pasar a seleccionar POR PESO apareció un efecto secundario que el criterio
+# antiguo (recorrido por precio) enmascaraba: una zona muy fuerte pero
+# lejanísima —el mínimo de la burbuja de 2022, a un -66%— se cuela en el plan
+# por tener mucho peso acumulado. Como entrada de un DCA es inútil: no se va a
+# ejecutar nunca. Los candidatos fuera de este rango se descartan ANTES de
+# agrupar, para que tampoco aporten peso a zonas intermedias.
+DCA_DISTANCIA_MAX_ATR = 12.0      # rango en múltiplos de ATR(14)
+DCA_DISTANCIA_MAX_ENTRADAS = 0.40 # techo absoluto: nada por debajo de un -40%
+DCA_DISTANCIA_MAX_SALIDAS = 0.60  # techo absoluto: nada por encima de un +60%
+# Suelos del rango, distintos por lado: en un valor tranquilo (KO, ATR 1,8%)
+# 12xATR se quedaba en un +21% y dejaba fuera el propio valor objetivo, que
+# estaba a +25%. Las salidas necesitan más recorrido que las entradas porque el
+# objetivo de un plan es precisamente un precio que hoy no existe.
+DCA_DISTANCIA_MIN_ENTRADAS = 0.25
+DCA_DISTANCIA_MIN_SALIDAS = 0.35
+
+# ------------------------------------------ separación mínima adaptativa ------
+# `separacion = k * ATR(14) / precio`, acotada entre un suelo y un techo para
+# que un ATR extremo no genere planes absurdos (niveles pegados o a un 40%).
+DCA_SEPARACION_ATR_ENTRADAS = 2.5
+DCA_SEPARACION_ATR_SALIDAS = 1.5
+DCA_SEPARACION_MIN_ABS = 0.03     # suelo: nunca menos de un 3% entre niveles
+DCA_SEPARACION_MAX_ABS = 0.20     # techo: nunca más de un 20%
+
+# ------------------------------------------------- regla de excepción ---------
+# Una zona que incumple la separación mínima puede colarse igualmente SOLO si
+# se cumplen las DOS condiciones a la vez (nunca una sola), y siempre por
+# encima de un suelo absoluto de distancia al precio actual.
+DCA_EXCEPCION_RATIO_PESO = 1.40      # su peso debe superar en >=40% al de la zona rival
+DCA_EXCEPCION_COBERTURA_MIN = 0.75   # y ya cubrir >=75% de la separación exigida
+DCA_EXCEPCION_DISTANCIA_MIN = 0.03   # jamás una entrada a menos de un 3% del precio
+
+# --------------------------------------------------------- Volume Profile -----
+# Dónde se ha negociado volumen de verdad, no solo por dónde pasó el precio.
+# El volumen de cada sesión se reparte proporcionalmente entre las bandas que
+# cruza su rango High-Low (no se asigna entero al cierre).
+VP_SESIONES = 504                 # ~2 años de sesiones
+VP_BANDAS = 60
+VP_VALUE_AREA_PCT = 0.70          # % del volumen total que define la Value Area
+VP_PESO_POC = 2.40                # Point of Control: el candidato de más peso
+VP_PESO_VALUE_AREA = 1.30         # bordes VAH/VAL, como zona ancha
+
+# ---------------------------------------------------- multi-temporalidad ------
+# Un pivote que también existe en velas semanales es estructuralmente más
+# fiable que uno que solo aparece en diario.
+PIVOTE_VENTANA_SEMANAL = 4        # semanas a cada lado para el máximo/mínimo local
+PIVOTE_PESO_SEMANAL = 1.80        # frente a 1,0-1,2 del pivote diario
+
+# ------------------------------------------------ toques y antigüedad ---------
+# Multiplicador NO lineal por número de toques confirmados (2 toques valen más
+# que 1, pero 6 no valen seis veces) y decadencia por antigüedad del pivote.
+PIVOTE_TOQUES_MULT = 0.35         # peso *= (1 + MULT * ln(toques))
+PIVOTE_DECADENCIA_ANOS = 3.0      # antigüedad a la que se aplica el descuento pleno
+PIVOTE_DECADENCIA_MIN = 0.60      # el peso nunca cae por debajo del 60% del original
+
+# ----------------------------------------------- líneas de tendencia ----------
+# Diagonales (canales) proyectadas a la fecha de hoy: un soporte horizontal de
+# hace 8 meses vale poco si hay una diagonal bajista clara por encima.
+DIAGONAL_MIN_TOQUES = 3           # una recta necesita 3 pivotes para ser válida
+DIAGONAL_TOLERANCIA_ATR = 0.75    # holgura para considerar que un pivote "toca" la recta
+DIAGONAL_SESIONES = 378           # ~18 meses: más atrás la diagonal deja de ser vigente
+DIAGONAL_PESO = 1.60
+
+# ------------------------------------------------- niveles psicológicos -------
+NIVEL_REDONDO_PESO = 0.60         # peso bajo: sirve de desempate, no de argumento
+NIVEL_REDONDO_MAX = 3             # nº de redondos a cada lado del precio
+
+# ------------------------------------------ régimen de volatilidad ------------
+# Percentil histórico del ATR relativo actual: con el ATR en máximos de 2 años
+# el mercado está nervioso y TODOS los niveles son menos fiables; con el ATR en
+# mínimos, los niveles se respetan mejor. Modula el peso global de la tabla.
+ATR_PERCENTIL_VENTANA = 504
+CONFIANZA_VOLATILIDAD_MIN = 0.85  # ATR en percentil 100 -> pesos x0,85
+CONFIANZA_VOLATILIDAD_MAX = 1.15  # ATR en percentil 0   -> pesos x1,15
 
 # ---------------------------------- PER mediano por sector (fallback local) ----
 # Solo se usa cuando no se puede calcular la mediana con comparables reales.
