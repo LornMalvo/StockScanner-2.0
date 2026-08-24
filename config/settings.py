@@ -444,9 +444,22 @@ DCA_SEPARACION_MAX_ABS = 0.20     # techo: nunca más de un 20%
 # Una zona que incumple la separación mínima puede colarse igualmente SOLO si
 # se cumplen las DOS condiciones a la vez (nunca una sola), y siempre por
 # encima de un suelo absoluto de distancia al precio actual.
+#
+# COBERTURA: bajada del 75% al 65% tras auditar GRAB, donde la zona de soporte
+# más pesada de toda la tabla (3,25 $, peso 14,8) quedaba fuera del plan por
+# cubrir el 68,5% de la separación exigida. Es la constante más sensible del
+# motor —afecta a todos los tickers, no solo al que motivó el cambio—, así que
+# conviene revalidar con `calibracion_motor_dca.py` antes de volver a moverla.
+#
+# SUELO: bajado del 3% al 1,5%. El 3% original bloqueaba zonas de confluencia
+# fuerte legítimamente pegadas al precio. No se elimina del todo porque la
+# cobertura por sí sola no acota bien el caso extremo: con la separación en su
+# mínimo (DCA_SEPARACION_MIN_ABS, 3%), una cobertura del 65% equivale a una
+# distancia de apenas el 1,95%, y sin suelo nada impediría una "Entrada 1"
+# prácticamente al precio de mercado si ese mínimo se recalibrara a la baja.
 DCA_EXCEPCION_RATIO_PESO = 1.40      # su peso debe superar en >=40% al de la zona rival
-DCA_EXCEPCION_COBERTURA_MIN = 0.75   # y ya cubrir >=75% de la separación exigida
-DCA_EXCEPCION_DISTANCIA_MIN = 0.03   # jamás una entrada a menos de un 3% del precio
+DCA_EXCEPCION_COBERTURA_MIN = 0.65   # y ya cubrir >=65% de la separación exigida
+DCA_EXCEPCION_DISTANCIA_MIN = 0.015  # suelo absoluto de distancia al precio actual
 
 # --------------------------------------------------------- Volume Profile -----
 # Dónde se ha negociado volumen de verdad, no solo por dónde pasó el precio.
@@ -752,46 +765,6 @@ CURRENT_RATIO_MEDIANO_SECTOR = {
     "Utilities": 0.9,
     "Real Estate": 1.2,
 }
-
-# ---------------------------------------------------------------- cartera ----
-# Divisa en la que se lleva el coste de las posiciones reales. El bróker
-# (Trade Republic) liquida ya convertido a euros, así que el libro de
-# operaciones guarda importes en EUR aunque el valor cotice en otra divisa;
-# `core/cartera.py::precio_en_eur()` convierte la cotización para poder
-# compararla con ese coste.
-CARTERA_DIVISA_BASE = "EUR"
-
-# Divisas de cotización que la app sabe convertir a la divisa base. Cualquier
-# otra hace que el valor de mercado se reporte como "dato no disponible" en
-# vez de mezclarse sin convertir (regla de oro: nunca inventar un dato).
-CARTERA_DIVISAS_CONVERTIBLES = ("EUR", "USD")
-
-# Umbral por debajo del cual un número de acciones se considera cero. Existe
-# porque el saldo se obtiene sumando y restando flotantes: tras vender toda
-# la posición puede quedar un residuo de 1e-14 acciones que, sin esta
-# tolerancia, dejaría la posición eternamente "abierta".
-CARTERA_TOLERANCIA_ACCIONES = 1e-6
-
-# ------------------------------------------------------------ paper trading --
-# Máquina de estados de una posición simulada. `derivar_estado()` en
-# core/paper_trading.py calcula la clave a partir del libro de ejecuciones;
-# aquí solo vive la etiqueta visible y el color de cada una. `descartada` es
-# la única que no se deriva (acción manual desde 'vigilancia').
-PAPER_ESTADOS = {
-    "vigilancia":      ("Vigilando", C_AMBAR),
-    "parcial_entrada": ("Abierto, en marcha", C_TEAL),
-    "abierta":         ("Abierto, completado", C_VERDE),
-    "parcial_salida":  ("Cerrado parcialmente", C_AZUL),
-    "cerrada":         ("Cerrado, completado", C_PRIMARIO),
-    "descartada":      ("Descartado", C_TEXTO_TENUE),
-}
-
-# Agrupación para las pestañas de la vista: activo = todavía puede moverse
-# (incluye tanto "esperando entrar" como "vendiendo por partes"); terminal =
-# ya no cambia salvo que se borre.
-PAPER_ESTADOS_ACTIVOS = ("vigilancia", "parcial_entrada", "abierta", "parcial_salida")
-PAPER_ESTADOS_CERRADOS = ("cerrada",)
-PAPER_ESTADOS_DESCARTADOS = ("descartada",)
 
 # ------------------------------------------------------------------ caché ----
 TTL_PRECIO = 300        # 5 min — fast_info en vivo (obtener_precio_actual). No
