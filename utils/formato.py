@@ -139,6 +139,20 @@ def fmt_usd_eur(valor_usd: Any, fx_usd_eur: Any, decimales: int = 2) -> str:
     return f"{base} ({base_eur})"
 
 
+def fmt_eur(valor: Any, decimales: int = 2, signo: bool = False) -> str:
+    """Importe en euros: 1234.5 -> '1.234,50 €'.
+
+    A diferencia de `fmt_usd_eur`, aquí el dato YA está en euros (es el caso
+    de la cartera real: el bróker liquida en EUR), así que no hay conversión
+    ni paréntesis. Con `signo=True` fuerza el '+' en los positivos, para
+    plusvalías donde el signo es la información principal.
+    """
+    if not es_valido(valor):
+        return TEXTO_ND
+    formato = f"{float(valor):+,.{decimales}f}" if signo else f"{float(valor):,.{decimales}f}"
+    return formato.replace(",", "@").replace(".", ",").replace("@", ".") + " €"
+
+
 def _recortar_decimales(valor: float, decimales: int = 2) -> str:
     """Redondea sin ceros sobrantes: 959,00 -> '959'; 828,19 se mantiene."""
     texto = f"{valor:.{decimales}f}"
