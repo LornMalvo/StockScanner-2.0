@@ -224,6 +224,14 @@ def _agrupar(candidatos: list[dict], precio: float, atr: float | None,
                 "peso": peso * confianza,
                 "peso_bruto": peso,
                 "motivos": [c["motivo"] for c in grupo],
+                # Desglose candidato a candidato. No lo consume la app: existe
+                # para poder AUDITAR el motor contra una fuente externa y ver
+                # exactamente de dónde sale cada zona y con qué precio entró
+                # cada evidencia antes de fundirse.
+                "detalle": [
+                    {"motivo": c["motivo"], "precio": c["precio"], "peso": c["peso"]}
+                    for c in sorted(grupo, key=lambda x: -x["peso"])
+                ],
             }
         )
     return sorted(zonas, key=lambda z: z["precio"])
