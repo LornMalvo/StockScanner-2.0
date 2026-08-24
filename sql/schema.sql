@@ -82,27 +82,45 @@ create index if not exists idx_cartera_ops_posicion on cartera_operaciones (posi
 create index if not exists idx_cartera_ops_usuario on cartera_operaciones (usuario_id);
 
 -- ------------------------------------------------------- paper trading --
+-- MODELO PLAN + LIBRO DE EVENTOS (mismo patrón que cartera_posiciones /
+-- cartera_operaciones). `paper_trading_niveles` es el plan, estático,
+-- congelado al guardar. `paper_trading_ejecuciones` es lo que de verdad ha
+-- pasado en la simulación; de ahí sale el precio medio REAL, distinto del
+-- proyectado que se guarda congelado en la cabecera.
 create table if not exists paper_trading_posiciones (
     id                        bigint generated always as identity primary key,
     usuario_id                text        not null default 'local',
     ticker                    text        not null,
-    estado                    text        not null default 'abierta',
-    precio_apertura           numeric,
+    estado                    text        not null default 'vigilancia'
+                              check (estado in (
+                                  'vigilancia', 'parcial_entrada', 'abierta',
+                                  'parcial_salida', 'cerrada', 'descartada'
+                              )),
+    -- foto del análisis en el momento de guardar el plan
+    precio_referencia         numeric,
+    fair_value                numeric,
+    upside_pct                numeric,
+    capital_asignado          numeric,
+    divisa_cotizacion         text,
+    notificado_nivel1         boolean     not null default false,
+    -- proyectado (si se llenaran los 3 niveles) — estático, del propio plan
     precio_medio_estimado     numeric,
     objetivo_medio_estimado   numeric,
     stop_loss                 numeric,
     puntuacion_calidad        numeric,
     puntuacion_timing         numeric,
     veredicto                 text,
+    -- resumen de cierre, derivado de la última ejecución al cerrar
     precio_cierre             numeric,
     motivo_cierre             text,
     abierta_en                timestamptz not null default now(),
-    cerrada_en                timestamptz
+    cerrada_en                date
 );
 create index if not exists idx_paper_usuario on paper_trading_posiciones (usuario_id, estado);
 
 create table if not exists paper_trading_niveles (
     id            bigint generated always as identity primary key,
+    usuario_id    text        not null default 'local',
     posicion_id   bigint      not null references paper_trading_posiciones (id) on delete cascade,
     tipo          text        not null check (tipo in ('entrada', 'salida', 'stop')),
     nivel         int         not null,
@@ -113,6 +131,29 @@ create table if not exists paper_trading_niveles (
     motivos       text
 );
 create index if not exists idx_niveles_posicion on paper_trading_niveles (posicion_id);
+create index if not exists idx_niveles_usuario on paper_trading_niveles (usuario_id);
+
+create table if not exists paper_trading_ejecuciones (
+    id              bigint generated always as identity primary key,
+    usuario_id      text        not null default 'local',
+    posicion_id     bigint      not null references paper_trading_posiciones (id) on delete cascade,
+    nivel_id        bigint      references paper_trading_niveles (id) on delete cascade,
+    ticker          text        not null,
+    tipo            text        not null check (tipo in ('entrada', 'salida')),
+    tipo_ejecucion  text        not null check (tipo_ejecucion in ('nivel', 'mercado')),
+    acciones        numeric     not null check (acciones > 0),
+    precio          numeric     not null check (precio > 0),
+    -- tipo de cambio EN EL MOMENTO de la ejecución (no el de hoy): el coste
+    -- en euros de una compra pasada depende del cambio de entonces. NULL si
+    -- la divisa de cotización ya es EUR (no hace falta convertir).
+    fx_usd_eur      numeric,
+    fecha           date        not null,
+    notas           text,
+    creado_en       timestamptz not null default now()
+);
+create index if not exists idx_ejecuciones_posicion on paper_trading_ejecuciones (posicion_id, fecha, id);
+create index if not exists idx_ejecuciones_usuario on paper_trading_ejecuciones (usuario_id);
+create index if not exists idx_ejecuciones_nivel on paper_trading_ejecuciones (nivel_id);
 
 -- ------------------------------------------- descripciones traducidas ---
 -- Caché de la traducción al español de `longBusinessSummary` (yfinance,
@@ -152,6 +193,7 @@ alter table cartera_posiciones        enable row level security;
 alter table cartera_operaciones       enable row level security;
 alter table paper_trading_posiciones  enable row level security;
 alter table paper_trading_niveles     enable row level security;
+alter table paper_trading_ejecuciones enable row level security;
 alter table descripciones_traducidas  enable row level security;
 alter table cache_api                 enable row level security;
 
@@ -161,5 +203,6 @@ create policy "acceso_local_cartera"    on cartera_posiciones       for all usin
 create policy "acceso_local_cartera_ops" on cartera_operaciones     for all using (true) with check (true);
 create policy "acceso_local_paper"      on paper_trading_posiciones for all using (true) with check (true);
 create policy "acceso_local_niveles"    on paper_trading_niveles    for all using (true) with check (true);
+create policy "acceso_local_ejecuciones" on paper_trading_ejecuciones for all using (true) with check (true);
 create policy "acceso_local_traducciones" on descripciones_traducidas for all using (true) with check (true);
 create policy "acceso_local_cache_api"  on cache_api                for all using (true) with check (true);
