@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 
 import streamlit as st
 
+from config.settings import CARTERA_DIVISA_BASE
+
 try:
     from supabase import Client, create_client
 except ImportError:  # la librería es opcional en desarrollo local
@@ -22,6 +24,7 @@ except ImportError:  # la librería es opcional en desarrollo local
 T_FAVORITOS = "favoritos"
 T_ANALISIS = "analisis_historico"
 T_CARTERA = "cartera_posiciones"
+T_CARTERA_OPS = "cartera_operaciones"
 T_PAPER = "paper_trading_posiciones"
 T_NIVELES = "paper_trading_niveles"
 T_TRADUCCIONES = "descripciones_traducidas"
@@ -156,23 +159,239 @@ def historico_analisis(ticker: str, limite: int = 30) -> list[dict]:
 
 
 # ---------------------------------------------------------------- cartera ----
-def listar_cartera() -> list[dict]:
+# Modelo de libro de operaciones. `cartera_posiciones` es solo la CABECERA de
+# una operación completa (un "trade"): identidad, divisas y ciclo de vida.
+# Ninguna cifra se almacena ahí: acciones vivas, precio medio y P&L se derivan
+# de `cartera_operaciones` en `core/cartera.py`. El único campo denormalizado
+# es `estado`, que no es una métrica sino un marcador de ciclo de vida escrito
+# por el mismo código que inserta la operación que lo provoca (y que permite
+# filtrar posiciones abiertas sin leer el libro entero).
+def listar_cartera(estado: str | None = None) -> list[dict]:
+    """Cabeceras de posición. `estado=None` devuelve abiertas y cerradas."""
     sb = cliente()
     if sb is None:
         return []
     try:
-        r = sb.table(T_CARTERA).select("*").eq("usuario_id", _usuario()).execute()
-        return r.data or []
+        q = sb.table(T_CARTERA).select("*").eq("usuario_id", _usuario())
+        if estado:
+            q = q.eq("estado", estado)
+        return q.order("abierta_en", desc=True).execute().data or []
     except Exception:
         return []
 
 
-def registrar_posicion_real(datos: dict) -> bool:
+def posicion_abierta(ticker: str) -> dict | None:
+    """Cabecera abierta del ticker, si la hay. Una compra sobre un ticker sin
+    posición abierta arranca una posición NUEVA: así la rentabilidad por
+    operación no mezcla dos trades independientes separados en el tiempo."""
+    sb = cliente()
+    if sb is None:
+        return None
+    try:
+        r = (
+            sb.table(T_CARTERA)
+            .select("*")
+            .eq("usuario_id", _usuario())
+            .eq("ticker", ticker.upper())
+            .eq("estado", "abierta")
+            .limit(1)
+            .execute()
+        )
+        filas = r.data or []
+        return filas[0] if filas else None
+    except Exception:
+        return None
+
+
+def listar_operaciones(posicion_id=None) -> list[dict]:
+    """Libro de operaciones. Sin `posicion_id`, TODAS las del usuario en una
+    sola petición: la vista de cartera las agrupa después en memoria, que sale
+    mucho más barato que una consulta por posición."""
+    sb = cliente()
+    if sb is None:
+        return []
+    try:
+        q = sb.table(T_CARTERA_OPS).select("*").eq("usuario_id", _usuario())
+        if posicion_id is not None:
+            q = q.eq("posicion_id", posicion_id)
+        return q.order("fecha").order("id").execute().data or []
+    except Exception:
+        return []
+
+
+def operaciones_por_posicion() -> dict:
+    """Libro completo indexado por `posicion_id` (una sola petición)."""
+    agrupadas: dict = {}
+    for op in listar_operaciones():
+        agrupadas.setdefault(op.get("posicion_id"), []).append(op)
+    return agrupadas
+
+
+def registrar_compra(
+    ticker: str,
+    acciones: float,
+    precio: float,
+    fecha,
+    comisiones: float = 0.0,
+    notas: str | None = None,
+    nombre: str | None = None,
+    divisa_cotizacion: str | None = None,
+) -> bool:
+    """Añade una compra, abriendo la posición si el ticker no tiene una viva."""
+    sb = cliente()
+    if sb is None:
+        return False
+    ticker = ticker.upper()
+    try:
+        cabecera = posicion_abierta(ticker)
+        if cabecera is None:
+            creada = (
+                sb.table(T_CARTERA)
+                .insert(
+                    {
+                        "usuario_id": _usuario(),
+                        "ticker": ticker,
+                        "nombre": nombre,
+                        "divisa": CARTERA_DIVISA_BASE,
+                        "divisa_cotizacion": divisa_cotizacion,
+                        "estado": "abierta",
+                        "abierta_en": str(fecha),
+                        "creado_en": _ahora(),
+                    }
+                )
+                .execute()
+            )
+            cabecera = (creada.data or [{}])[0]
+        posicion_id = cabecera.get("id")
+        if not posicion_id:
+            return False
+
+        # Si la cabecera existía sin divisa de cotización resuelta y ahora sí
+        # la tenemos, se aprovecha para completarla.
+        if divisa_cotizacion and not cabecera.get("divisa_cotizacion"):
+            actualizar_divisa_cotizacion(posicion_id, divisa_cotizacion)
+
+        sb.table(T_CARTERA_OPS).insert(
+            {
+                "usuario_id": _usuario(),
+                "posicion_id": posicion_id,
+                "ticker": ticker,
+                "tipo": "compra",
+                "acciones": float(acciones),
+                "precio": float(precio),
+                "comisiones": float(comisiones or 0),
+                "fecha": str(fecha),
+                "notas": notas,
+                "creado_en": _ahora(),
+            }
+        ).execute()
+        return True
+    except Exception:
+        return False
+
+
+def registrar_venta(
+    posicion_id,
+    ticker: str,
+    acciones: float,
+    precio: float,
+    fecha,
+    comisiones: float = 0.0,
+    notas: str | None = None,
+) -> bool:
+    """Añade una venta y cierra la cabecera si deja la posición a cero.
+
+    La comprobación de sobreventa se hace ANTES, en la interfaz, con
+    `core/cartera.py::validar_venta()`; aquí solo se persiste.
+    """
     sb = cliente()
     if sb is None:
         return False
     try:
-        sb.table(T_CARTERA).insert({**datos, "usuario_id": _usuario(), "creado_en": _ahora()}).execute()
+        sb.table(T_CARTERA_OPS).insert(
+            {
+                "usuario_id": _usuario(),
+                "posicion_id": posicion_id,
+                "ticker": ticker.upper(),
+                "tipo": "venta",
+                "acciones": float(acciones),
+                "precio": float(precio),
+                "comisiones": float(comisiones or 0),
+                "fecha": str(fecha),
+                "notas": notas,
+                "creado_en": _ahora(),
+            }
+        ).execute()
+        sincronizar_estado(posicion_id, fecha_cierre=fecha)
+        return True
+    except Exception:
+        return False
+
+
+def sincronizar_estado(posicion_id, fecha_cierre=None) -> None:
+    """Recalcula `estado` a partir del libro y lo escribe si ha cambiado.
+
+    Se llama tras cada venta y tras borrar una operación: borrar la venta que
+    cerró una posición tiene que volver a abrirla, o la cabecera mentiría.
+    """
+    from core import cartera as _cartera  # import local: evita ciclo al importar
+
+    sb = cliente()
+    if sb is None:
+        return
+    try:
+        resumen = _cartera.resumen_posicion(listar_operaciones(posicion_id))
+        cerrada = resumen["acciones"] <= 0
+        sb.table(T_CARTERA).update(
+            {
+                "estado": "cerrada" if cerrada else "abierta",
+                "cerrada_en": (str(fecha_cierre) if cerrada and fecha_cierre else None),
+            }
+        ).eq("id", posicion_id).execute()
+    except Exception:
+        return
+
+
+def eliminar_operacion(operacion_id, posicion_id) -> bool:
+    """Borra una operación del libro (corrección de errores de registro).
+
+    Si la posición se queda sin operaciones, se borra también la cabecera:
+    una posición vacía no es información, es basura.
+    """
+    sb = cliente()
+    if sb is None:
+        return False
+    try:
+        sb.table(T_CARTERA_OPS).delete().eq("id", operacion_id).execute()
+        if not listar_operaciones(posicion_id):
+            sb.table(T_CARTERA).delete().eq("id", posicion_id).execute()
+        else:
+            sincronizar_estado(posicion_id)
+        return True
+    except Exception:
+        return False
+
+
+def eliminar_posicion(posicion_id) -> bool:
+    """Borra la posición entera con su libro (cascade en el esquema)."""
+    sb = cliente()
+    if sb is None:
+        return False
+    try:
+        sb.table(T_CARTERA).delete().eq("id", posicion_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def actualizar_divisa_cotizacion(posicion_id, divisa: str) -> bool:
+    sb = cliente()
+    if sb is None:
+        return False
+    try:
+        sb.table(T_CARTERA).update({"divisa_cotizacion": divisa.upper()}).eq(
+            "id", posicion_id
+        ).execute()
         return True
     except Exception:
         return False
