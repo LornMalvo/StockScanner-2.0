@@ -753,6 +753,25 @@ CURRENT_RATIO_MEDIANO_SECTOR = {
     "Real Estate": 1.2,
 }
 
+# ---------------------------------------------------------------- cartera ----
+# Divisa en la que se lleva el coste de las posiciones reales. El bróker
+# (Trade Republic) liquida ya convertido a euros, así que el libro de
+# operaciones guarda importes en EUR aunque el valor cotice en otra divisa;
+# `core/cartera.py::precio_en_eur()` convierte la cotización para poder
+# compararla con ese coste.
+CARTERA_DIVISA_BASE = "EUR"
+
+# Divisas de cotización que la app sabe convertir a la divisa base. Cualquier
+# otra hace que el valor de mercado se reporte como "dato no disponible" en
+# vez de mezclarse sin convertir (regla de oro: nunca inventar un dato).
+CARTERA_DIVISAS_CONVERTIBLES = ("EUR", "USD")
+
+# Umbral por debajo del cual un número de acciones se considera cero. Existe
+# porque el saldo se obtiene sumando y restando flotantes: tras vender toda
+# la posición puede quedar un residuo de 1e-14 acciones que, sin esta
+# tolerancia, dejaría la posición eternamente "abierta".
+CARTERA_TOLERANCIA_ACCIONES = 1e-6
+
 # ------------------------------------------------------------------ caché ----
 TTL_PRECIO = 300        # 5 min — fast_info en vivo (obtener_precio_actual). No
 # lleva cubo de calendario: es la única pieza que de verdad necesita
