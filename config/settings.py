@@ -772,6 +772,27 @@ CARTERA_DIVISAS_CONVERTIBLES = ("EUR", "USD")
 # tolerancia, dejaría la posición eternamente "abierta".
 CARTERA_TOLERANCIA_ACCIONES = 1e-6
 
+# ------------------------------------------------------------ paper trading --
+# Máquina de estados de una posición simulada. `derivar_estado()` en
+# core/paper_trading.py calcula la clave a partir del libro de ejecuciones;
+# aquí solo vive la etiqueta visible y el color de cada una. `descartada` es
+# la única que no se deriva (acción manual desde 'vigilancia').
+PAPER_ESTADOS = {
+    "vigilancia":      ("Vigilando", C_AMBAR),
+    "parcial_entrada": ("Abierto, en marcha", C_TEAL),
+    "abierta":         ("Abierto, completado", C_VERDE),
+    "parcial_salida":  ("Cerrado parcialmente", C_AZUL),
+    "cerrada":         ("Cerrado, completado", C_PRIMARIO),
+    "descartada":      ("Descartado", C_TEXTO_TENUE),
+}
+
+# Agrupación para las pestañas de la vista: activo = todavía puede moverse
+# (incluye tanto "esperando entrar" como "vendiendo por partes"); terminal =
+# ya no cambia salvo que se borre.
+PAPER_ESTADOS_ACTIVOS = ("vigilancia", "parcial_entrada", "abierta", "parcial_salida")
+PAPER_ESTADOS_CERRADOS = ("cerrada",)
+PAPER_ESTADOS_DESCARTADOS = ("descartada",)
+
 # ------------------------------------------------------------------ caché ----
 TTL_PRECIO = 300        # 5 min — fast_info en vivo (obtener_precio_actual). No
 # lleva cubo de calendario: es la única pieza que de verdad necesita
