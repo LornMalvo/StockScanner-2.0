@@ -37,6 +37,7 @@ from config.settings import (
     TTL_ESTADOS_FINANCIEROS,
     TTL_FUNDAMENTALES,
     TTL_FX,
+    TTL_INFO_L2,
     TTL_HISTORICO_RESPALDO,
     TTL_NOTICIAS,
     TTL_PRECIO,
@@ -133,6 +134,12 @@ _METRICAS: dict[str, float] = {
     "aciertos_cache_l1": 0,
     "aciertos_cache_l2": 0,
     "fallos": 0,
+    # Contador aparte porque el genérico `fallos` NO ve este caso: cuando
+    # Yahoo no devuelve fundamentales lo hace con un 200 (o con un 404 que
+    # yfinance se traga internamente), sin lanzar excepción, así que `_pedir`
+    # lo cuenta como petición correcta. Es justo el fallo que hay que poder
+    # rastrear en los logs.
+    "fallos_fundamentales": 0,
     "segundos_dormido": 0.0,
 }
 
@@ -157,7 +164,8 @@ def log_resumen_metricas(etiqueta: str = "") -> None:
     m = resumen_metricas()
     logger.info(
         "%s peticiones reales: %d Yahoo (+%d en lote) · %d Finnhub · "
-        "aciertos caché: %d L1 / %d L2 · fallos: %d · %.1fs de throttle",
+        "aciertos caché: %d L1 / %d L2 · fallos: %d (%d de fundamentales) · "
+        "%.1fs de throttle",
         f"[{etiqueta}]" if etiqueta else "",
         m["peticiones_yahoo"],
         m["peticiones_yahoo_lote"],
@@ -165,6 +173,7 @@ def log_resumen_metricas(etiqueta: str = "") -> None:
         m["aciertos_cache_l1"],
         m["aciertos_cache_l2"],
         m["fallos"],
+        m["fallos_fundamentales"],
         m["segundos_dormido"],
     )
 
@@ -245,6 +254,27 @@ def _cache_guardar(clave: str, valor) -> None:
     _almacen()[clave] = (time.time(), valor)
 
 
+def _serializable(valor):
+    """Reduce un dict de yfinance a tipos que la columna `jsonb` acepta.
+
+    `info` es casi siempre escalares y listas, pero yfinance cuela de vez en
+    cuando algún tipo de numpy o una fecha. Un solo valor no serializable
+    haría fallar el `upsert` entero y perderíamos el respaldo L2 sin que se
+    note: se convierte a texto lo que no sea un tipo JSON nativo.
+    """
+    if isinstance(valor, dict):
+        return {str(k): _serializable(v) for k, v in valor.items()}
+    if isinstance(valor, (list, tuple)):
+        return [_serializable(v) for v in valor]
+    if valor is None or isinstance(valor, (bool, int, float, str)):
+        # bool antes que int a propósito: en Python bool ES int.
+        return valor
+    try:
+        return float(valor)  # numpy.int64, numpy.float64, Decimal…
+    except (TypeError, ValueError):
+        return str(valor)
+
+
 def _clave(nombre: str) -> str | None:
     """Lee una credencial de st.secrets sin romper si no está definida."""
     try:
@@ -269,8 +299,49 @@ def obtener_fx_usd_eur() -> float | None:
 
 
 # ==================================================================== yfinance =
+def _info_sin_precio(info: dict) -> dict:
+    """Copia de `info` sin los campos de cotización en vivo.
+
+    Se aplica a lo que llega de L2 (Supabase), que puede tener hasta
+    `TTL_INFO_L2` de antigüedad. Los fundamentales aguantan perfectamente esa
+    edad; el precio no. Al quitarlos, la cadena de precio de
+    `obtener_paquete()` cae sola al siguiente eslabón (último cierre del
+    histórico, que sí se revalida con el calendario de mercado) en vez de
+    mostrar una cotización de hace horas como si fuera de ahora.
+    """
+    return {k: v for k, v in info.items() if k not in _CAMPOS_PRECIO_VIVO}
+
+
+_CAMPOS_PRECIO_VIVO = (
+    "currentPrice",
+    "regularMarketPrice",
+    "regularMarketPreviousClose",
+    "regularMarketOpen",
+    "regularMarketDayHigh",
+    "regularMarketDayLow",
+    "bid",
+    "ask",
+)
+
+
+def marcar_ticker_inexistente(ticker: str) -> None:
+    """Marca en caché que el ticker de verdad NO existe, para no reintentarlo.
+
+    Solo debe llamarse cuando hay confirmación cruzada: ni `obtener_info()` ni
+    `obtener_historico()` han devuelto nada. `obtener_info()` por sí sola NO
+    puede concluirlo (ver su docstring), así que la decisión vive en
+    `obtener_paquete()`, que es quien ve las dos fuentes a la vez.
+    """
+    clave = f"info:{ticker.strip().upper()}"
+    registro = _almacen().get(clave)
+    valor = registro[1] if registro else {"_ss_error": ["ticker sin datos en ninguna fuente"]}
+    if isinstance(valor, dict) and "_ss_error" in valor:
+        valor["_ss_no_existe"] = True
+        _cache_guardar(clave, valor)
+
+
 def obtener_info(ticker: str) -> dict:
-    """Fundamentales de yfinance, con reintentos y diagnóstico real.
+    """Fundamentales de yfinance, con reintentos, respaldo en L2 y diagnóstico.
 
     Se intenta primero `get_info()` y, si llega vacío, la propiedad `.info`.
     Si ambas fallan *sin lanzar excepción* (respuesta 200 pero sin campos de
@@ -281,13 +352,39 @@ def obtener_info(ticker: str) -> dict:
     `Ticker` cacheado y se reintenta una vez completa con credenciales
     frescas antes de rendirse.
 
-    Si ambas fallan se devuelve `_ss_error` con el motivo concreto, que la
-    interfaz muestra en lugar de un mudo "dato no disponible".
+    IMPORTANTE — una respuesta vacía NO significa "el ticker no existe".
+    Antes se marcaba `_ss_no_existe=True` en cuanto la respuesta llegaba sin
+    campos de identidad, y eso hacía que el fallo se recordara 6 h
+    (`TTL_FALLO_TICKER_INEXISTENTE`). El problema: Yahoo, cuando limita por
+    IP, devuelve muy a menudo un 200 con el cuerpo vacío en vez de un 429, así
+    que un bloqueo pasajero quedaba clasificado como permanente y los
+    fundamentales de un valor perfectamente real desaparecían durante horas
+    (mientras el histórico, que va por otra ruta, seguía cargando y la ficha
+    se pintaba a medias). Esa clasificación se ha movido a
+    `obtener_paquete()`, que es el único punto donde se ven a la vez las dos
+    fuentes; aquí todo fallo caduca en `TTL_FALLO` (2 min).
+
+    Además se respalda en L2 (Supabase): tras un redespliegue de Streamlit
+    Community Cloud, L1 está vacía y esta es la primera petición de cualquier
+    análisis, justo la peor combinación posible. Con L2 el primer análisis
+    tras el reinicio ya no depende de que Yahoo esté de buenas.
+
+    Si todo falla se devuelve `_ss_error` con el motivo concreto, que la
+    interfaz muestra en lugar de un mudo "dato no disponible", y que además
+    queda en los logs de la app ("Manage app" de Streamlit Community Cloud).
     """
     clave = f"info:{ticker}"
     cacheado = _cache_leer(clave, TTL_FUNDAMENTALES)
     if cacheado is not None:
         return cacheado
+
+    clave_l2 = f"info:{ticker}"
+    l2 = bd_supabase.cache_l2_leer(clave_l2, TTL_INFO_L2)
+    if isinstance(l2, dict) and (l2.get("longName") or l2.get("shortName")):
+        _registrar("aciertos_cache_l2")
+        valor = _info_sin_precio(l2)
+        _cache_guardar(clave, valor)
+        return valor
 
     errores: list[str] = []
     for intento_sesion in range(2):
@@ -302,6 +399,10 @@ def obtener_info(ticker: str) -> dict:
                 valor.get("longName") or valor.get("shortName") or valor.get("regularMarketPrice")
             ):
                 _cache_guardar(clave, valor)
+                # Solo se respalda en L2 lo que tiene identidad: una respuesta
+                # que solo trae precio no sirve como fundamentales cacheados.
+                if valor.get("longName") or valor.get("shortName"):
+                    bd_supabase.cache_l2_guardar(clave_l2, _serializable(valor))
                 return valor
             vacio_sin_excepcion = True
             errores.append(
@@ -315,11 +416,18 @@ def obtener_info(ticker: str) -> dict:
         else:
             break
 
-    # Si el motivo final fue "respuesta sin campos de identidad" (no una
-    # excepción de red/rate-limit), lo más probable es que el ticker no
-    # exista o esté mal escrito — ese fallo se recuerda mucho más tiempo
-    # (ver TTL_FALLO_TICKER_INEXISTENTE en _cache_leer) que uno transitorio.
-    fallo = {"_ss_error": errores, "_ss_no_existe": vacio_sin_excepcion}
+    # El fallo se recuerda solo TTL_FALLO (2 min). No se decide aquí si el
+    # ticker existe: eso lo resuelve `obtener_paquete()` cruzando con el
+    # histórico, y si confirma que no hay nada llama a
+    # `marcar_ticker_inexistente()` para alargar el recuerdo del fallo.
+    _registrar("fallos_fundamentales")
+    logger.warning(
+        "Fundamentales no disponibles para %s (%d intentos fallidos): %s",
+        ticker,
+        len(errores),
+        " | ".join(errores) or "sin detalle",
+    )
+    fallo = {"_ss_error": errores}
     _cache_guardar(clave, fallo)
     return fallo
 
@@ -902,6 +1010,15 @@ def obtener_paquete(ticker: str, incluir_noticias: bool = True) -> dict:
     estimaciones = obtener_estimaciones_analistas(ticker)
 
     existe = bool(info.get("longName") or info.get("shortName")) or not historico.empty
+
+    # Confirmación cruzada: solo aquí, con las dos fuentes a la vista, se
+    # puede afirmar que un ticker no existe. `obtener_info()` ya no lo decide
+    # por su cuenta (una respuesta vacía de Yahoo es indistinguible de un
+    # bloqueo por IP). Marcarlo alarga el recuerdo del fallo a 6 h y evita
+    # castigar el presupuesto de peticiones con un ticker mal escrito.
+    if not existe:
+        marcar_ticker_inexistente(ticker)
+        logger.info("Ticker %s sin datos ni en info ni en histórico: marcado como inexistente", ticker)
 
     # Cadena de precio de más barata a más cara: info ya descargado -> último
     # cierre del histórico ya descargado -> petición nueva (solo si hace falta).
