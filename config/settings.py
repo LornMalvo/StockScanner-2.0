@@ -27,6 +27,27 @@ C_TEXTO = "#0f172a"
 C_TEXTO_TENUE = "#64748b"
 C_BORDE = "#e2e8f0"
 
+# --------------------------------------------- paleta del plan DCA (gráfico)
+# Las entradas van en la familia AZUL y las salidas en la VERDE. Antes las
+# entradas eran verdes (C_VERDE) y las salidas turquesa (C_TEAL): a 1,3 px de
+# grosor los dos tonos eran prácticamente indistinguibles, que es justo lo
+# contrario de lo que tiene que comunicar el gráfico (comprar vs. vender).
+#
+# Dentro de cada familia el tono se aclara del nivel 1 al 3, así que el color
+# codifica DOS cosas a la vez: qué se hace (comprar/vender/proteger) y en qué
+# orden llega. Por eso las líneas ya no necesitan bajar de opacidad para
+# distinguir el nivel, y todas se pintan sólidas y legibles.
+PLAN_COLORES_ENTRADA = ("#1d4ed8", "#3b82f6", "#93c5fd")
+PLAN_COLORES_SALIDA = ("#059669", "#10b981", "#6ee7b7")
+PLAN_COLOR_STOP = C_ROJO
+
+# Alto del gráfico de cotización + MACD. 430 px dejaba las velas y los hasta
+# 7 niveles del plan comprimidos en una franja demasiado estrecha para leer
+# nada; con 560 px y menos peso relativo del MACD el plan se lee de un
+# vistazo.
+GRAFICO_ALTO = 560
+GRAFICO_PROPORCION_FILAS = (0.75, 0.25)  # precio / MACD
+
 # ------------------------------------------------------------ navegación ----
 SECCIONES = [
     "Análisis Individual",
@@ -849,6 +870,19 @@ TTL_FUNDAMENTALES = 3600  # 1 h — consenso, estimaciones, precio objetivo:
 TTL_ESTADOS_FINANCIEROS = 172800  # 48 h
 TTL_NOTICIAS = 900      # 15 min
 TTL_FX = 600            # 10 min
+
+# `obtener_info()` (los fundamentales de yfinance) es la pieza más frágil de
+# todo el sistema: es la primera petición de cualquier análisis y la que
+# antes topa con el límite por IP de Yahoo. Cuando Streamlit Community Cloud
+# redespliega o reinicia el contenedor, L1 se vacía y el primer análisis
+# tenía que pedirla a pelo — de ahí el clásico "tras un redespliegue no
+# carga, y al rato ya va". Con respaldo en L2 (Supabase) ese primer análisis
+# se sirve de la base de datos. El TTL es largo a propósito: lo que se
+# reutiliza de L2 son los fundamentales (que cambian con los resultados
+# trimestrales), NO el precio — los campos de precio se descartan al leer de
+# L2 (ver `_info_sin_precio()` en datos_api.py) para que la cotización venga
+# siempre del histórico, que sí se revalida con el calendario de mercado.
+TTL_INFO_L2 = 43200  # 12 h
 
 # ------------------------------------------------------- calendario de mercado
 # Usado por `_cubo_mercado()` en datos_api.py para no gastar peticiones de
