@@ -975,8 +975,12 @@ def _bloque_6_plan(a: dict) -> None:
 
 
 def _etiqueta_zona(zona: dict, p: dict) -> str:
-    motivos = ", ".join(zona.get("motivos") or [])
-    return f"{_precio_fmt(zona['precio'], p)} · peso {zona.get('peso', 0):.1f} · {motivos}"
+    """Peso PRIMERO a propósito: el desplegable trunca por ancho, y con pesos
+    de dos dígitos un formato "precio · peso X.X" cortaba a mitad del número
+    (ej. "peso 1" en vez de "peso 11.8" — parecía un peso distinto, no uno
+    truncado). Los motivos no van aquí: ya se muestran completos en el
+    caption de debajo, sin límite de ancho."""
+    return f"Peso {zona.get('peso', 0):.1f} · {_precio_fmt(zona['precio'], p)}"
 
 
 def _indice_por_defecto(zonas: list[dict], precio_actual: float | None) -> int:
