@@ -8,8 +8,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from config.settings import C_AZUL, C_PRIMARIO, C_TEAL, C_VERDE, TEXTO_ND
-from utils.formato import es_valido
+from config.settings import C_AZUL, C_PRIMARIO, C_ROJO, C_TEAL, C_VERDE, TEXTO_ND
+from utils.formato import es_valido, fmt_num, fmt_pct
 
 
 def titulo_bloque(texto: str) -> None:
@@ -177,8 +177,140 @@ def nivel_plan(etiqueta: str, precio_txt: str, distancia: str, motivos: list[str
     )
 
 
-def grafico_precio_macd(historico, tecnico: dict, ticker: str) -> None:
-    """Velas + MM50/MM200 arriba, MACD abajo, con eje X compartido."""
+# --------------------------------------------------- superposición plan DCA --
+# Opacidad decreciente por nivel: el nivel 1 (el más cercano y el de mayor peso
+# de capital) es el más sólido, el 3 el más tenue.
+_PLAN_OPACIDADES = (0.90, 0.65, 0.45)
+
+
+def _niveles_plan_dca(plan: dict) -> list[dict]:
+    """Aplana el plan DCA en una lista de líneas dibujables.
+
+    Devuelve, por cada nivel: precio, etiqueta corta, color, opacidad, tipo de
+    trazo y grosor. Los niveles sin precio válido se descartan (regla del
+    proyecto: un dato ausente no se sustituye por nada, simplemente no se
+    pinta).
+    """
+    lineas: list[dict] = []
+
+    for n in plan.get("entradas") or []:
+        if not es_valido(n.get("precio")):
+            continue
+        indice = int(n.get("nivel", len(lineas) + 1)) - 1
+        lineas.append(
+            {
+                "precio": float(n["precio"]),
+                "etiqueta": f"E{n.get('nivel', indice + 1)}",
+                "distancia_pct": n.get("distancia_pct"),
+                "color": C_VERDE,
+                "opacidad": _PLAN_OPACIDADES[min(max(indice, 0), 2)],
+                "trazo": "dash",
+                "grosor": 1.3,
+            }
+        )
+
+    for n in plan.get("salidas") or []:
+        if not es_valido(n.get("precio")):
+            continue
+        indice = int(n.get("nivel", len(lineas) + 1)) - 1
+        lineas.append(
+            {
+                "precio": float(n["precio"]),
+                "etiqueta": f"S{n.get('nivel', indice + 1)}",
+                "distancia_pct": n.get("distancia_pct"),
+                "color": C_TEAL,
+                "opacidad": _PLAN_OPACIDADES[min(max(indice, 0), 2)],
+                "trazo": "dot",
+                "grosor": 1.3,
+            }
+        )
+
+    sl = plan.get("stop_loss") or {}
+    if es_valido(sl.get("precio")):
+        lineas.append(
+            {
+                "precio": float(sl["precio"]),
+                "etiqueta": "SL",
+                "distancia_pct": sl.get("distancia_pct"),
+                "color": C_ROJO,
+                "opacidad": 0.95,
+                "trazo": "dashdot",
+                "grosor": 1.8,
+            }
+        )
+
+    return lineas
+
+
+def _pintar_plan_dca(fig, plan: dict, df) -> int:
+    """Superpone las entradas, salidas y stop loss del plan sobre las velas.
+
+    Se dibujan como `shapes` (add_hline) y no como trazas: así no ensucian la
+    leyenda ni el hover unificado del eje X, y no se cuelan en el subgráfico
+    del MACD. Las etiquetas van fuera del área de dibujo (margen derecho) para
+    no taparlas con las velas.
+
+    Devuelve los píxeles de margen derecho que necesita reservar el llamante
+    para que no se corte ninguna etiqueta (0 si no ha pintado nada).
+    """
+    lineas = _niveles_plan_dca(plan)
+    if not lineas:
+        return 0
+
+    ancho_etiqueta = 0
+    for linea in lineas:
+        fig.add_hline(
+            y=linea["precio"],
+            line=dict(color=linea["color"], width=linea["grosor"], dash=linea["trazo"]),
+            opacity=linea["opacidad"],
+            row=1,
+            col=1,
+        )
+        distancia = fmt_pct(linea["distancia_pct"])
+        texto = f"{linea['etiqueta']} · {fmt_num(linea['precio'])}"
+        if distancia != TEXTO_ND:
+            texto += f" ({distancia})"
+        ancho_etiqueta = max(ancho_etiqueta, len(texto))
+        fig.add_annotation(
+            xref="x domain",
+            x=1.008,
+            xanchor="left",
+            yref="y",
+            y=linea["precio"],
+            yanchor="middle",
+            text=texto,
+            showarrow=False,
+            align="left",
+            font=dict(size=9, color=linea["color"]),
+            opacity=max(linea["opacidad"], 0.75),
+        )
+
+    # El eje Y se fija a mano para que quepa el plan completo aunque algún
+    # nivel caiga fuera del rango de las velas visibles: ver el plan en
+    # contexto importa más que la amplitud de la vela (decisión consciente;
+    # un stop lejano aplanará algo el gráfico). No se delega en el autorango
+    # de Plotly porque las `shapes` no siempre lo empujan.
+    precios = [linea["precio"] for linea in lineas]
+    minimo = min([float(df["Low"].min())] + precios)
+    maximo = max([float(df["High"].max())] + precios)
+    if es_valido(minimo) and es_valido(maximo) and maximo > minimo:
+        margen = (maximo - minimo) * 0.04
+        fig.update_yaxes(range=[minimo - margen, maximo + margen], row=1, col=1)
+
+    # Margen derecho a medida de la etiqueta más larga (~5,4 px por carácter a
+    # tamaño 9) para que no se corte ninguna. Acotado para no comerse el
+    # gráfico si algún día las etiquetas crecen.
+    return min(140, int(12 + ancho_etiqueta * 5.4))
+
+
+def grafico_precio_macd(historico, tecnico: dict, ticker: str, plan: dict | None = None) -> None:
+    """Velas + MM50/MM200 arriba, MACD abajo, con eje X compartido.
+
+    Si se pasa `plan` (el dict de `core.plan_dca.construir_plan`) y está
+    disponible, superpone sobre las velas los 3 niveles de entrada, los 3 de
+    salida y el stop loss. El llamante decide si lo pasa o no (toggle de la
+    vista); aquí no se consulta ningún estado de la interfaz.
+    """
     if historico is None or historico.empty:
         st.markdown(f'<div class="ss-nd">{TEXTO_ND}</div>', unsafe_allow_html=True)
         return
@@ -251,9 +383,16 @@ def grafico_precio_macd(historico, tecnico: dict, ticker: str) -> None:
             col=1,
         )
 
+    # El plan se pinta al final, ya con todas las trazas puestas: así el
+    # cálculo del rango del eje Y ve el gráfico completo.
+    margen_derecho = 8
+    if plan and plan.get("disponible"):
+        # hueco para las etiquetas, que van fuera del área de dibujo
+        margen_derecho = _pintar_plan_dca(fig, plan, df) or 8
+
     fig.update_layout(
         height=430,
-        margin=dict(l=8, r=8, t=10, b=8),
+        margin=dict(l=8, r=margen_derecho, t=10, b=8),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         xaxis_rangeslider_visible=False,
