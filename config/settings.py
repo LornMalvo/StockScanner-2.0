@@ -494,6 +494,17 @@ DCA_EXCEPCION_DISTANCIA_MIN = 0.015  # suelo absoluto de distancia al precio act
 # distancia de apenas el 1,95%, y sin suelo nada impediría una "Entrada 1"
 # prácticamente al precio de mercado si ese mínimo se recalibrara a la baja.
 
+# ------------------------------------------------------------- 52 semanas -----
+# Antes hardcodeados inline (1,50 / 2,00), sin justificación explícita para la
+# asimetría entre ambos. Igualados a 2,20: validado con `calibracion_pesos_52s.py`
+# sobre 16 tickers — el lado soporte gana selecciones sin ninguna regresión, y
+# el lado resistencia queda sin cambios frente a 2,00 (los pivotes semanales
+# con 2+ toques ya lo superaban en ambos casos). Sin razón de fondo para que el
+# máximo pese más: si acaso, el mínimo de 52s (capitulación) es una lectura más
+# fiable que el máximo (que en momentum suele seguir rompiendo al alza).
+PESO_MIN_52S = 2.20
+PESO_MAX_52S = 2.20
+
 # --------------------------------------------------------- Volume Profile -----
 # Dónde se ha negociado volumen de verdad, no solo por dónde pasó el precio.
 # El volumen de cada sesión se reparte proporcionalmente entre las bandas que
