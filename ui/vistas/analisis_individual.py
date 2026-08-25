@@ -297,7 +297,8 @@ def _bloque_3_grafico(a: dict) -> None:
     precio = p.get("precio")
     C.titulo_bloque("Cotización · MACD y datos fundamentales y técnicos")
 
-    C.grafico_precio_macd(p.get("historico"), t, p["ticker"])
+    plan_en_grafico = _toggle_plan_dca(a)
+    C.grafico_precio_macd(p.get("historico"), t, p["ticker"], plan=plan_en_grafico)
     _diagnostico_info(p)
 
     col_f, col_t = st.columns(2)
@@ -332,6 +333,30 @@ def _bloque_3_grafico(a: dict) -> None:
         st.markdown(
             f'<div class="ss-anotacion">Conversión a euros: {TEXTO_ND}.</div>', unsafe_allow_html=True
         )
+
+
+def _toggle_plan_dca(a: dict) -> dict | None:
+    """Interruptor para superponer el plan DCA sobre las velas.
+
+    Devuelve el plan si el interruptor está activo (y el plan existe), o None
+    para que el gráfico se dibuje limpio. La `key` incluye el ticker para que
+    el estado no se arrastre de un valor a otro al analizar uno nuevo.
+    """
+    plan = a.get("plan") or {}
+    ticker = a["paquete"]["ticker"]
+    disponible = bool(plan.get("disponible"))
+
+    activo = st.toggle(
+        "Mostrar el plan DCA en el gráfico",
+        key=f"plan_en_grafico_{ticker}",
+        value=False,
+        disabled=not disponible,
+        help="Superpone los 3 niveles de entrada (verde), los 3 de salida (turquesa) "
+        "y el stop loss (rojo) sobre las velas."
+        if disponible
+        else f"Plan no disponible: {plan.get('motivo', 'sin datos suficientes')}.",
+    )
+    return plan if (activo and disponible) else None
 
 
 def _fila_distancia(etiqueta: str, valor, precio, fx=None) -> None:
