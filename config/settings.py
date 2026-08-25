@@ -388,12 +388,26 @@ DCA_SEPARACION_MIN_ENTRADAS = 0.10  # RESPALDO: solo se usa si no hay ATR válid
 DCA_PESOS_ENTRADA = [0.40, 0.35, 0.25]
 DCA_PESOS_SALIDA = [0.35, 0.35, 0.30]
 DCA_STOP_ATR_MULT = 2.5
-DCA_STOP_MAX_CAIDA = 0.30  # el stop nunca se coloca a más de un 30% del nivel 1
-# El tope anterior (30% bajo el nivel 1) podía dejar el stop POR ENCIMA del
-# último nivel de entrada, es decir, un plan que se detiene antes de terminar
-# de ejecutarse. Este margen fuerza que el stop quede siempre por debajo de la
-# entrada más baja.
+
+# Pérdida máxima admitida. IMPORTANTE: se mide sobre el PRECIO MEDIO ESTIMADO
+# del plan, no sobre el nivel 1. Anclarla al nivel 1 (como se hacía antes) era
+# incoherente: si la escalera de entradas se abría más de un 30% entre N1 y N3
+# —algo habitual en valores volátiles—, el suelo caía POR ENCIMA de N3, pisaba
+# la regla del ATR y dejaba el stop pegado a la última entrada. Medida sobre el
+# coste medio la restricción es económicamente interpretable ("no arriesgo más
+# de un 30% de lo invertido") y ya no puede entrar en conflicto con la escalera.
+DCA_STOP_MAX_CAIDA = 0.30
+
+# Margen mínimo entre la última entrada y el stop. Garantiza que el plan no se
+# detenga antes de haberse ejecutado del todo. Es proporcional a la volatilidad:
+# un margen porcentual fijo dejaba stops a media sesión de distancia en valores
+# con ATR alto. El suelo porcentual solo actúa como respaldo si no hay ATR.
 DCA_STOP_MARGEN_MIN = 0.02
+DCA_STOP_MARGEN_ATR_MULT = 1.5
+DCA_STOP_MARGEN_MAX = 0.12
+
+# Respaldo cuando no hay ni ATR ni mínimo de 52 semanas utilizable.
+DCA_STOP_CAIDA_RESPALDO = 0.15
 
 # ================== motor de confluencia de soportes/resistencias =============
 # Rediseño completo del motor DCA. El diagnóstico previo (simulado sobre NBIX y
