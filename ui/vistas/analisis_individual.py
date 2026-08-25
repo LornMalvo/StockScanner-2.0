@@ -11,6 +11,7 @@ from config.settings import (
     C_ROJO,
     C_TEXTO_TENUE,
     C_VERDE,
+    CARTERA_DIVISAS_CONVERTIBLES,
     CONSENSO_ANALISTAS_ES,
     CONSENSO_MIN_ANALISTAS,
     CURRENT_RATIO_MEDIANO_SECTOR,
@@ -23,6 +24,7 @@ from config.settings import (
     MARGEN_BRUTO_MEDIANO_SECTOR,
     MARGEN_NETO_MEDIANO_SECTOR,
     MARGEN_OPERATIVO_MEDIANO_SECTOR,
+    PAPER_ESTADOS,
     PB_MEDIANO_SECTOR,
     PEG_MEDIANO_SECTOR,
     PER_MEDIANO_SECTOR,
@@ -130,14 +132,7 @@ def render() -> None:
 
     if analizar and ticker.strip():
         with st.spinner("Recopilando datos y calculando…"):
-            # reset/log aquí, no dentro de ejecutar_analisis(): esa función la
-            # comparte el Rastreador, que hace su propio reset_metricas() /
-            # log_resumen_metricas() sobre el lote completo. Ponerlo dentro
-            # de ejecutar_analisis() borraría, en cada ticker del lote, las
-            # métricas acumuladas de los tickers anteriores.
-            datos_api.reset_metricas()
             st.session_state["analisis"] = ejecutar_analisis(ticker)
-            datos_api.log_resumen_metricas(f"Análisis individual ({ticker.strip().upper()})")
         if "error" not in st.session_state["analisis"]:
             _guardar_en_historico(st.session_state["analisis"])
 
@@ -917,50 +912,85 @@ def _bloque_6_plan(a: dict) -> None:
     C.metrica("Ratio riesgo / recompensa", fmt_num(plan["ratio_riesgo_recompensa"]))
 
     st.divider()
-    _boton_paper_trading(a, plan)
+    _panel_paper_trading(a, plan)
 
 
-def _boton_paper_trading(a: dict, plan: dict) -> None:
-    p = a["paquete"]
-    nivel_1 = plan["entradas"][0]["precio"]
-    ejecutable = plan.get("ejecutable", False)
+def _panel_paper_trading(a: dict, plan: dict) -> None:
+    """Reemplaza el antiguo "Ejecutar plan en Paper Trading": ahora el plan
+    se GUARDA en seguimiento (estado inicial 'vigilancia'), esté o no el
+    precio ya en la Entrada 1 — la ejecución real de cada nivel se hace
+    después, desde el apartado Paper Trading."""
+    p, v = a["paquete"], a["valoracion"]
+    ticker = p["ticker"]
+    moneda = p.get("moneda")
     conectado = bd_supabase.hay_conexion()
-
-    if not ejecutable:
-        st.button(
-            "Ejecutar plan en Paper Trading",
-            disabled=True,
-            use_container_width=True,
-            help=f"El precio actual ({_precio_fmt(p.get('precio'), p)}) todavía no ha alcanzado "
-            f"el nivel 1 de entrada ({_precio_fmt(nivel_1, p)}).",
-        )
-        st.caption("El plan se activará cuando la cotización alcance o pierda el nivel 1 de entrada.")
-        return
 
     if not conectado:
         st.button(
-            "Ejecutar plan en Paper Trading",
+            "Guardar plan en Paper Trading",
             disabled=True,
             use_container_width=True,
-            help="Configura SUPABASE_URL y SUPABASE_KEY para guardar operaciones.",
+            help="Configura SUPABASE_URL y SUPABASE_KEY para guardar planes.",
         )
         return
 
-    if st.button("Ejecutar plan en Paper Trading", type="primary", use_container_width=True):
-        ok = bd_supabase.abrir_paper_trade(
-            p["ticker"],
-            plan,
-            {
-                "puntuacion_calidad": a["calidad"].get("puntuacion"),
-                "puntuacion_timing": a["timing"].get("puntuacion"),
-                "veredicto": a["veredicto"]["etiqueta"],
-            },
+    if moneda not in CARTERA_DIVISAS_CONVERTIBLES:
+        st.button(
+            "Guardar plan en Paper Trading",
+            disabled=True,
+            use_container_width=True,
+            help=f"Divisa de cotización ({moneda or TEXTO_ND}) no soportada todavía para el "
+            "seguimiento en euros. Se admiten valores en "
+            + " y ".join(CARTERA_DIVISAS_CONVERTIBLES) + ".",
         )
-        if ok:
-            st.success("Posición simulada abierta. Disponible en el apartado Paper Trading.")
-            if alertas_telegram.disponible():
-                alertas_telegram.alerta_plan_ejecutado(
-                    p["ticker"], plan, a["veredicto"]["etiqueta"]
-                )
-        else:
-            st.error("No se ha podido guardar la operación. Revisa la conexión con Supabase.")
+        return
+
+    existente = bd_supabase.plan_activo(ticker)
+    if existente:
+        etiqueta = PAPER_ESTADOS.get(existente.get("estado"), (existente.get("estado"),))[0]
+        st.info(
+            f"Ya hay un plan en seguimiento para {ticker} ({etiqueta}). "
+            "Gestiónalo desde el apartado Paper Trading."
+        )
+        return
+
+    col_capital, col_boton = st.columns([1, 2])
+    capital = col_capital.number_input(
+        "Capital asignado (€)",
+        min_value=0.0,
+        step=100.0,
+        format="%.2f",
+        key=f"capital_paper_{ticker}",
+        help="Presupuesto total en euros para las 3 entradas del plan, "
+        "según su reparto de peso (40/35/25 %).",
+    )
+    with col_boton:
+        st.write("")  # alinea verticalmente el botón con el input
+        guardar = st.button("Guardar plan en Paper Trading", type="primary", use_container_width=True)
+
+    if not guardar:
+        return
+    if capital <= 0:
+        st.warning("Indica el capital asignado (€) antes de guardar el plan.")
+        return
+
+    posicion_id = bd_supabase.guardar_plan_paper_trading(
+        ticker,
+        plan,
+        {
+            "moneda": moneda,
+            "fair_value": v.get("fair_value"),
+            "upside_pct": v.get("upside_pct"),
+            "puntuacion_calidad": a["calidad"].get("puntuacion"),
+            "puntuacion_timing": a["timing"].get("puntuacion"),
+            "veredicto": a["veredicto"]["etiqueta"],
+        },
+        capital,
+    )
+    if posicion_id:
+        if alertas_telegram.disponible():
+            alertas_telegram.alerta_plan_ejecutado(ticker, plan, a["veredicto"]["etiqueta"])
+        st.session_state["seccion"] = "Paper Trading"
+        st.rerun()
+    else:
+        st.error("No se ha podido guardar el plan. Revisa la conexión con Supabase.")
