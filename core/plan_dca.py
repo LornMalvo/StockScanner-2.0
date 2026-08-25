@@ -68,6 +68,8 @@ from config.settings import (
     DCA_STOP_MAX_CAIDA,
     DIAGONAL_PESO,
     NIVEL_REDONDO_PESO,
+    PESO_MAX_52S,
+    PESO_MIN_52S,
     PIVOTE_DECADENCIA_ANOS,
     PIVOTE_DECADENCIA_MIN,
     PIVOTE_PESO_SEMANAL,
@@ -406,7 +408,7 @@ def _candidatos_soporte(precio: float, tec: dict) -> list[dict]:
     # `siempre`: exento del filtro de rango de trabajo (ver `_en_rango`).
     v = _num(tec.get("min_52s"))
     if v is not None and v < precio:
-        c.append({"precio": v, "peso": 1.5, "motivo": "Mínimo de 52 semanas", "siempre": True})
+        c.append({"precio": v, "peso": PESO_MIN_52S, "motivo": "Mínimo de 52 semanas", "siempre": True})
     return c
 
 
@@ -423,7 +425,7 @@ def _candidatos_resistencia(precio: float, tec: dict, fair_value: float | None) 
     # máximo histórico NO, porque en un valor hundido puede estar a un +400% y
     # ahí sí es ruido para un plan de salidas.
     for clave, etiqueta, peso, siempre in (
-        ("max_52s", "Máximo de 52 semanas", 2.0, True),
+        ("max_52s", "Máximo de 52 semanas", PESO_MAX_52S, True),
         ("ath", "Máximo histórico", 2.2, False),
     ):
         v = _num(tec.get(clave))
