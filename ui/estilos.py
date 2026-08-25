@@ -129,6 +129,21 @@ div[data-testid="stVerticalBlockBorderWrapper"] {{ border-radius: 18px; }}
   color: var(--ss-tenue); font-weight: 400; font-size: .74rem; margin-left: .5rem;
 }}
 
+/* --- ficha compacta de posición (rejilla de Cartera y Paper Trading) --- */
+.ss-mini-cab {{
+  display: flex; justify-content: space-between; align-items: baseline; gap: .5rem;
+}}
+.ss-mini-tk {{ font-size: 1.05rem; font-weight: 700; }}
+.ss-mini-aparte {{ color: var(--ss-tenue); font-size: .76rem; text-align: right; }}
+.ss-mini-dest {{
+  font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums;
+  margin: .3rem 0 .05rem;
+}}
+.ss-mini-sub {{ color: var(--ss-tenue); font-size: .76rem; margin-bottom: .35rem; }}
+/* Filas de apoyo más apretadas y sin la línea de separación: dentro de una
+   tarjeta pequeña, el punteado de .ss-metrica satura. */
+.ss-mini .ss-metrica {{ padding: .12rem 0; border-bottom: 0; font-size: .8rem; }}
+
 /* --- anotaciones al pie (p. ej. tipo de cambio aplicado) --- */
 .ss-anotacion {{
   color: var(--ss-tenue); font-size: .68rem; font-style: italic; margin-top: .2rem;

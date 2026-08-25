@@ -8,7 +8,19 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from config.settings import C_AZUL, C_PRIMARIO, C_ROJO, C_TEAL, C_VERDE, TEXTO_ND
+from config.settings import (
+    C_AZUL,
+    C_PRIMARIO,
+    C_ROJO,
+    C_TEAL,
+    C_VERDE,
+    GRAFICO_ALTO,
+    GRAFICO_PROPORCION_FILAS,
+    PLAN_COLOR_STOP,
+    PLAN_COLORES_ENTRADA,
+    PLAN_COLORES_SALIDA,
+    TEXTO_ND,
+)
 from utils.formato import es_valido, fmt_num, fmt_pct
 
 
@@ -109,6 +121,53 @@ def metrica_fundamental(
     )
 
 
+def mini_ficha(
+    titulo: str,
+    destacado: str,
+    color_destacado: str,
+    subtexto: str,
+    filas: list[tuple[str, str]],
+    aparte: str | None = None,
+    etiqueta_estado: tuple[str, str] | None = None,
+) -> None:
+    """Tarjeta compacta de una posición, para la rejilla de Cartera y Paper
+    Trading.
+
+    Sustituye a la ficha antigua de ~430 px, que apilaba seis métricas en
+    vertical y hacía inviable revisar una cartera con muchas posiciones. Aquí
+    manda UN dato (el P/L, en grande y con color), acompañado de su contexto
+    en una línea y de dos o tres métricas de apoyo. El detalle completo se
+    abre bajo demanda, así que nada se pierde: solo deja de ocupar pantalla
+    de forma permanente.
+
+    Todo se pinta en un único `st.markdown` para que las filas queden dentro
+    del contenedor `.ss-mini` y hereden su interlineado comprimido. El botón
+    "Ver detalle" lo pone la vista, porque tiene que ser un `st.button` real.
+    """
+    cabecera = f'<span class="ss-mini-tk">{html.escape(titulo)}</span>'
+    if aparte:
+        cabecera += f'<span class="ss-mini-aparte">{html.escape(aparte)}</span>'
+    estado_html = ""
+    if etiqueta_estado:
+        texto_estado, color_estado = etiqueta_estado
+        estado_html = (
+            f'<span class="ss-badge" style="background:{color_estado}">'
+            f"{html.escape(texto_estado)}</span>"
+        )
+    cuerpo = "".join(
+        f'<div class="ss-metrica"><span>{html.escape(e)}</span>'
+        f"<span>{html.escape(v)}</span></div>"
+        for e, v in filas
+    )
+    st.markdown(
+        f'<div class="ss-mini"><div class="ss-mini-cab">{cabecera}</div>'
+        f"{estado_html}"
+        f'<div class="ss-mini-dest" style="color:{color_destacado}">{html.escape(destacado)}</div>'
+        f'<div class="ss-mini-sub">{html.escape(subtexto)}</div>{cuerpo}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def alerta(texto: str, color: str) -> None:
     st.markdown(
         f'<div class="ss-alerta" style="background:{color}">{html.escape(texto)}</div>',
@@ -178,9 +237,35 @@ def nivel_plan(etiqueta: str, precio_txt: str, distancia: str, motivos: list[str
 
 
 # --------------------------------------------------- superposición plan DCA --
-# Opacidad decreciente por nivel: el nivel 1 (el más cercano y el de mayor peso
-# de capital) es el más sólido, el 3 el más tenue.
-_PLAN_OPACIDADES = (0.90, 0.65, 0.45)
+# El NIVEL ya no se codifica bajando la opacidad (que a 1,3 px dejaba el nivel
+# 3 casi invisible) sino con el tono dentro de su familia de color: entradas
+# en azul de oscuro a claro, salidas en verde de oscuro a claro (ver
+# PLAN_COLORES_* en config/settings.py). Todas las líneas se pintan sólidas.
+_PLAN_OPACIDAD = 0.9
+
+
+def _color_nivel(tipo: str, indice: int) -> str:
+    """Color de un nivel según su tipo y su orden (0 = nivel 1)."""
+    if tipo == "stop":
+        return PLAN_COLOR_STOP
+    paleta = PLAN_COLORES_ENTRADA if tipo == "entrada" else PLAN_COLORES_SALIDA
+    return paleta[min(max(indice, 0), len(paleta) - 1)]
+
+
+def _texto_sobre(fondo: str) -> str:
+    """Blanco o casi negro, el que contraste con `fondo`.
+
+    Los niveles 3 son tonos claros (#93c5fd, #6ee7b7): con texto blanco la
+    pastilla queda ilegible. En vez de fijar el color a mano por nivel se
+    calcula la luminancia relativa, así la regla sigue valiendo si algún día
+    se cambia la paleta.
+    """
+    try:
+        r, g, b = (int(fondo[i : i + 2], 16) / 255 for i in (1, 3, 5))
+    except (ValueError, IndexError):
+        return "#ffffff"
+    luminancia = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return "#0f172a" if luminancia > 0.6 else "#ffffff"
 
 
 def _niveles_plan_dca(plan: dict) -> list[dict]:
@@ -202,10 +287,10 @@ def _niveles_plan_dca(plan: dict) -> list[dict]:
                 "precio": float(n["precio"]),
                 "etiqueta": f"E{n.get('nivel', indice + 1)}",
                 "distancia_pct": n.get("distancia_pct"),
-                "color": C_VERDE,
-                "opacidad": _PLAN_OPACIDADES[min(max(indice, 0), 2)],
+                "color": _color_nivel("entrada", indice),
+                "opacidad": _PLAN_OPACIDAD,
                 "trazo": "dash",
-                "grosor": 1.3,
+                "grosor": 2.0,
             }
         )
 
@@ -218,10 +303,10 @@ def _niveles_plan_dca(plan: dict) -> list[dict]:
                 "precio": float(n["precio"]),
                 "etiqueta": f"S{n.get('nivel', indice + 1)}",
                 "distancia_pct": n.get("distancia_pct"),
-                "color": C_TEAL,
-                "opacidad": _PLAN_OPACIDADES[min(max(indice, 0), 2)],
+                "color": _color_nivel("salida", indice),
+                "opacidad": _PLAN_OPACIDAD,
                 "trazo": "dot",
-                "grosor": 1.3,
+                "grosor": 2.0,
             }
         )
 
@@ -232,10 +317,10 @@ def _niveles_plan_dca(plan: dict) -> list[dict]:
                 "precio": float(sl["precio"]),
                 "etiqueta": "SL",
                 "distancia_pct": sl.get("distancia_pct"),
-                "color": C_ROJO,
+                "color": PLAN_COLOR_STOP,
                 "opacidad": 0.95,
                 "trazo": "dashdot",
-                "grosor": 1.8,
+                "grosor": 2.4,
             }
         )
 
@@ -267,13 +352,15 @@ def _pintar_plan_dca(fig, plan: dict, df) -> int:
             col=1,
         )
         distancia = fmt_pct(linea["distancia_pct"])
-        texto = f"{linea['etiqueta']} · {fmt_num(linea['precio'])}"
+        texto = f"<b>{linea['etiqueta']}</b> {fmt_num(linea['precio'])}"
         if distancia != TEXTO_ND:
-            texto += f" ({distancia})"
-        ancho_etiqueta = max(ancho_etiqueta, len(texto))
+            texto += f" · {distancia}"
+        # El ancho se mide sobre el texto SIN las etiquetas HTML: `<b></b>` no
+        # ocupa píxeles en el render, y contarlo inflaría el margen derecho.
+        ancho_etiqueta = max(ancho_etiqueta, len(texto) - 7)
         fig.add_annotation(
             xref="x domain",
-            x=1.008,
+            x=1.006,
             xanchor="left",
             yref="y",
             y=linea["precio"],
@@ -281,8 +368,13 @@ def _pintar_plan_dca(fig, plan: dict, df) -> int:
             text=texto,
             showarrow=False,
             align="left",
-            font=dict(size=9, color=linea["color"]),
-            opacity=max(linea["opacidad"], 0.75),
+            # Pastilla sólida con el texto en blanco en vez de texto suelto de
+            # 9 px: se lee sobre cualquier fondo y no compite con las velas.
+            font=dict(size=11, color=_texto_sobre(linea["color"])),
+            bgcolor=linea["color"],
+            borderpad=4,
+            borderwidth=0,
+            opacity=1,
         )
 
     # El eje Y se fija a mano para que quepa el plan completo aunque algún
@@ -297,10 +389,10 @@ def _pintar_plan_dca(fig, plan: dict, df) -> int:
         margen = (maximo - minimo) * 0.04
         fig.update_yaxes(range=[minimo - margen, maximo + margen], row=1, col=1)
 
-    # Margen derecho a medida de la etiqueta más larga (~5,4 px por carácter a
-    # tamaño 9) para que no se corte ninguna. Acotado para no comerse el
-    # gráfico si algún día las etiquetas crecen.
-    return min(140, int(12 + ancho_etiqueta * 5.4))
+    # Margen derecho a medida de la etiqueta más larga (~6,4 px por carácter a
+    # tamaño 11, más el relleno de la pastilla) para que no se corte ninguna.
+    # Acotado para no comerse el gráfico si algún día las etiquetas crecen.
+    return min(175, int(18 + ancho_etiqueta * 6.4))
 
 
 def grafico_precio_macd(historico, tecnico: dict, ticker: str, plan: dict | None = None) -> None:
@@ -322,7 +414,7 @@ def grafico_precio_macd(historico, tecnico: dict, ticker: str, plan: dict | None
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.04,
-        row_heights=[0.68, 0.32],
+        row_heights=list(GRAFICO_PROPORCION_FILAS),
     )
 
     fig.add_trace(
@@ -391,12 +483,15 @@ def grafico_precio_macd(historico, tecnico: dict, ticker: str, plan: dict | None
         margen_derecho = _pintar_plan_dca(fig, plan, df) or 8
 
     fig.update_layout(
-        height=430,
-        margin=dict(l=8, r=margen_derecho, t=10, b=8),
+        height=GRAFICO_ALTO,
+        # Margen izquierdo holgado: con el gráfico más alto el eje Y muestra
+        # más marcas y con l=8 las cifras de 4 dígitos se cortaban.
+        margin=dict(l=46, r=margen_derecho, t=22, b=16),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         xaxis_rangeslider_visible=False,
-        legend=dict(orientation="h", y=1.12, x=0, font=dict(size=10)),
+        legend=dict(orientation="h", y=1.06, x=0, font=dict(size=11)),
+        font=dict(size=11),
         hovermode="x unified",
     )
     fig.update_xaxes(showgrid=False, rangeslider_visible=False)
