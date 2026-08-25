@@ -131,8 +131,16 @@ def render() -> None:
         analizar = st.button("Analizar", type="primary", use_container_width=True)
 
     if analizar and ticker.strip():
+        # Instrumentación: mide solo ESTE análisis, no lo acumulado de la
+        # sesión. El resumen se vuelca a los logs de la app (visibles en
+        # "Manage app" de Streamlit Community Cloud), nunca a la interfaz.
+        # Es lo que permite distinguir un fallo de fundamentales por límite
+        # de Yahoo de uno por ticker inexistente, y ver cuánto está
+        # aportando cada capa de caché tras un redespliegue.
+        datos_api.reset_metricas()
         with st.spinner("Recopilando datos y calculando…"):
             st.session_state["analisis"] = ejecutar_analisis(ticker)
+        datos_api.log_resumen_metricas(f"Análisis individual · {ticker.strip().upper()}")
         if "error" not in st.session_state["analisis"]:
             _guardar_en_historico(st.session_state["analisis"])
 
@@ -347,15 +355,16 @@ def _toggle_plan_dca(a: dict) -> dict | None:
     disponible = bool(plan.get("disponible"))
 
     activo = st.toggle(
-        "Mostrar el plan DCA en el gráfico",
+        "Mostrar Plan DCA",
         key=f"plan_en_grafico_{ticker}",
         value=False,
         disabled=not disponible,
-        help="Superpone los 3 niveles de entrada (verde), los 3 de salida (turquesa) "
-        "y el stop loss (rojo) sobre las velas."
-        if disponible
-        else f"Plan no disponible: {plan.get('motivo', 'sin datos suficientes')}.",
     )
+    # Sin tooltip: el motivo de que el plan no esté disponible es información
+    # que hay que ver, no que descubrir pasando el ratón por encima de un
+    # control desactivado.
+    if not disponible:
+        st.caption(f"Plan no disponible: {plan.get('motivo', 'sin datos suficientes')}.")
     return plan if (activo and disponible) else None
 
 
@@ -979,19 +988,25 @@ def _panel_paper_trading(a: dict, plan: dict) -> None:
         )
         return
 
-    col_capital, col_boton = st.columns([1, 2])
+    # `vertical_alignment="bottom"` alinea la base del input con la del botón
+    # sin trucos. El `st.write("")` que se usaba antes asumía que la etiqueta
+    # ocupaba exactamente una línea; con el icono del tooltip se partía en dos
+    # y el botón quedaba desplazado (además de depender del ancho de pantalla).
+    col_capital, col_boton = st.columns([1, 2], vertical_alignment="bottom")
     capital = col_capital.number_input(
         "Capital asignado (€)",
         min_value=0.0,
         step=100.0,
         format="%.2f",
         key=f"capital_paper_{ticker}",
-        help="Presupuesto total en euros para las 3 entradas del plan, "
-        "según su reparto de peso (40/35/25 %).",
     )
     with col_boton:
-        st.write("")  # alinea verticalmente el botón con el input
         guardar = st.button("Guardar plan en Paper Trading", type="primary", use_container_width=True)
+
+    st.caption(
+        "Presupuesto total en euros para las 3 entradas del plan, según su reparto "
+        "de peso (40 / 35 / 25 %)."
+    )
 
     if not guardar:
         return

@@ -281,6 +281,71 @@ def _libro(pos: dict, resumen: dict) -> None:
         )
 
 
+# --------------------------------------------------------------- rejilla ----
+# La ficha completa (`_tarjeta`) ocupa ~430 px, así que diez posiciones eran
+# más de cuatro pantallas de scroll. Ahora la vista por defecto es una rejilla
+# de fichas compactas de 3 en fondo y el detalle se abre bajo demanda, debajo
+# de la rejilla y a ancho completo. No se oculta ninguna información: se
+# cambia "todo visible siempre" por "lo importante siempre, el resto a un
+# clic".
+_COLUMNAS_REJILLA = 3
+_CLAVE_DETALLE = "detalle_cartera"
+
+
+def _mini(pos: dict, resumen: dict) -> None:
+    abierta = pos.get("estado") == "abierta"
+    if abierta:
+        destacado = fmt_eur(resumen["latente"], signo=True)
+        color = _color(resumen["latente"])
+        subtexto = (
+            f"{fmt_pct(resumen['latente_pct'])} · valor {fmt_eur(resumen['valor_actual'])}"
+        )
+        filas = [
+            ("Precio medio", fmt_eur(resumen["precio_medio"])),
+            ("Precio actual", fmt_eur(resumen["precio_actual_eur"])),
+        ]
+        aparte = f"{_fmt_acciones(resumen['acciones'])} acc."
+    else:
+        destacado = fmt_eur(resumen["realizado"], signo=True)
+        color = _color(resumen["realizado"])
+        subtexto = f"{fmt_pct(resumen['realizado_pct'])} · posición cerrada"
+        filas = [
+            ("Desembolsado", fmt_eur(resumen["invertido_bruto"])),
+            ("Recuperado", fmt_eur(resumen["recuperado"])),
+        ]
+        aparte = fmt_fecha(pos.get("cerrada_en") or resumen["ultima_fecha"])
+
+    with st.container(border=True):
+        C.mini_ficha(pos["ticker"], destacado, color, subtexto, filas, aparte=aparte)
+        abierto = st.session_state.get(_CLAVE_DETALLE) == pos["id"]
+        if st.button(
+            "Ocultar detalle" if abierto else "Ver detalle",
+            key=f"detalle_cartera_{pos['id']}",
+            use_container_width=True,
+        ):
+            st.session_state[_CLAVE_DETALLE] = None if abierto else pos["id"]
+            st.rerun()
+
+
+def _rejilla(posiciones: list[dict], resumenes: dict) -> None:
+    for inicio in range(0, len(posiciones), _COLUMNAS_REJILLA):
+        tramo = posiciones[inicio : inicio + _COLUMNAS_REJILLA]
+        # Siempre se crean las 3 columnas aunque el tramo tenga menos
+        # posiciones: así la última fila no estira sus tarjetas a ancho
+        # completo y la rejilla mantiene la alineación.
+        columnas = st.columns(_COLUMNAS_REJILLA)
+        for columna, pos in zip(columnas, tramo):
+            with columna:
+                _mini(pos, resumenes[pos["id"]])
+
+    seleccionada = st.session_state.get(_CLAVE_DETALLE)
+    pos = next((p for p in posiciones if p["id"] == seleccionada), None)
+    if pos is None:
+        return
+    st.divider()
+    _tarjeta(pos, resumenes[pos["id"]])
+
+
 def _tarjeta(pos: dict, resumen: dict) -> None:
     abierta = pos.get("estado") == "abierta"
 
@@ -381,10 +446,8 @@ def render() -> None:
     with t_abiertas:
         if not abiertas:
             st.info("No hay posiciones abiertas.")
-        for pos in abiertas:
-            _tarjeta(pos, resumenes[pos["id"]])
+        _rejilla(abiertas, resumenes)
     with t_cerradas:
         if not cerradas:
             st.info("Todavía no has cerrado ninguna posición.")
-        for pos in cerradas:
-            _tarjeta(pos, resumenes[pos["id"]])
+        _rejilla(cerradas, resumenes)

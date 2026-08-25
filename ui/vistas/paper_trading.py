@@ -269,6 +269,87 @@ def _niveles_plan(pos: dict, niveles: list[dict], resumen: dict) -> None:
             C.metrica("Stop loss", _precio_fmt_nativo(stop["precio"], moneda))
 
 
+# --------------------------------------------------------------- rejilla ----
+# Mismo criterio que en Gestión de Cartera: rejilla de fichas compactas de 3
+# en fondo y detalle completo bajo demanda. Un plan en vigilancia no necesita
+# ocupar media pantalla todos los días hasta que el precio llegue a la
+# Entrada 1; lo que necesita es que se vea de un vistazo cuánto le falta.
+_COLUMNAS_REJILLA = 3
+_CLAVE_DETALLE = "detalle_paper"
+
+
+def _mini(pos: dict, resumen: dict) -> None:
+    estado = pos["estado"]
+    etiqueta_estado = PAPER_ESTADOS.get(estado, (estado, C_TEXTO_TENUE))
+    progreso = resumen["progreso"]
+    moneda = pos.get("divisa_cotizacion")
+
+    # El dato protagonista es el que de verdad manda en ese momento del ciclo
+    # de vida: P/L latente si hay acciones vivas, resultado realizado si ya se
+    # cerró, y el precio actual mientras el plan solo está vigilando.
+    if resumen["acciones"] > 0:
+        destacado = fmt_eur(resumen["latente"], signo=True)
+        color = _color(resumen["latente"])
+        subtexto = f"{fmt_pct(resumen['latente_pct'])} latente"
+    elif abs(resumen.get("realizado") or 0) > 0.005:
+        destacado = fmt_eur(resumen["realizado"], signo=True)
+        color = _color(resumen["realizado"])
+        subtexto = "resultado realizado"
+    else:
+        destacado = _precio_fmt_nativo(resumen.get("precio_actual_nativo"), moneda)
+        color = C_TEXTO_TENUE
+        subtexto = "precio actual · sin ejecuciones"
+
+    filas = [
+        (
+            "Entradas / salidas",
+            f"{progreso['entradas_ejecutadas']}/{progreso['entradas_totales']} · "
+            f"{progreso['salidas_ejecutadas']}/{progreso['salidas_totales']}",
+        ),
+        (
+            "Capital",
+            f"{fmt_eur(resumen['capital_ejecutado'])} de {fmt_eur(resumen['capital_asignado'])}"
+            if es_valido(resumen.get("capital_asignado"))
+            else TEXTO_ND,
+        ),
+    ]
+
+    with st.container(border=True):
+        C.mini_ficha(
+            pos["ticker"],
+            destacado,
+            color,
+            subtexto,
+            filas,
+            aparte=fmt_fecha(pos.get("abierta_en")),
+            etiqueta_estado=etiqueta_estado,
+        )
+        abierto = st.session_state.get(_CLAVE_DETALLE) == pos["id"]
+        if st.button(
+            "Ocultar detalle" if abierto else "Ver detalle",
+            key=f"detalle_paper_{pos['id']}",
+            use_container_width=True,
+        ):
+            st.session_state[_CLAVE_DETALLE] = None if abierto else pos["id"]
+            st.rerun()
+
+
+def _rejilla(posiciones: list[dict], niveles: dict, resumenes: dict) -> None:
+    for inicio in range(0, len(posiciones), _COLUMNAS_REJILLA):
+        tramo = posiciones[inicio : inicio + _COLUMNAS_REJILLA]
+        columnas = st.columns(_COLUMNAS_REJILLA)
+        for columna, pos in zip(columnas, tramo):
+            with columna:
+                _mini(pos, resumenes[pos["id"]])
+
+    seleccionado = st.session_state.get(_CLAVE_DETALLE)
+    pos = next((p for p in posiciones if p["id"] == seleccionado), None)
+    if pos is None:
+        return
+    st.divider()
+    _tarjeta(pos, niveles.get(pos["id"], []), resumenes[pos["id"]])
+
+
 def _tarjeta(pos: dict, niveles: list[dict], resumen: dict) -> None:
     estado = pos["estado"]
     etiqueta_estado, color_estado = PAPER_ESTADOS.get(estado, (estado, C_TEXTO_TENUE))
@@ -400,15 +481,12 @@ def render() -> None:
     with t_activos:
         if not activos:
             st.info("No hay planes activos.")
-        for pos in activos:
-            _tarjeta(pos, niveles.get(pos["id"], []), resumenes[pos["id"]])
+        _rejilla(activos, niveles, resumenes)
     with t_cerrados:
         if not cerrados:
             st.info("Todavía no se ha cerrado ningún plan.")
-        for pos in cerrados:
-            _tarjeta(pos, niveles.get(pos["id"], []), resumenes[pos["id"]])
+        _rejilla(cerrados, niveles, resumenes)
     with t_descartados:
         if not descartados:
             st.info("No hay planes descartados.")
-        for pos in descartados:
-            _tarjeta(pos, niveles.get(pos["id"], []), resumenes[pos["id"]])
+        _rejilla(descartados, niveles, resumenes)
