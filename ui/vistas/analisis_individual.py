@@ -940,8 +940,11 @@ def _bloque_6_plan(a: dict) -> None:
 
     st.markdown("**Niveles de entrada**")
     for n in plan["entradas"]:
+        etiqueta = f"Entrada {n['nivel']} · {n['peso_capital'] * 100:.0f} % del capital"
+        if n.get("manual"):
+            etiqueta += " · 🔧 Selección manual"
         C.nivel_plan(
-            f"Entrada {n['nivel']} · {n['peso_capital'] * 100:.0f} % del capital",
+            etiqueta,
             _precio_fmt(n["precio"], p),
             fmt_pct(n["distancia_pct"]),
             n["motivos"],
@@ -949,8 +952,11 @@ def _bloque_6_plan(a: dict) -> None:
 
     st.markdown("**Niveles de salida**")
     for n in plan["salidas"]:
+        etiqueta = f"Salida {n['nivel']} · {n['peso_posicion'] * 100:.0f} % de la posición"
+        if n.get("manual"):
+            etiqueta += " · 🔧 Selección manual"
         C.nivel_plan(
-            f"Salida {n['nivel']} · {n['peso_posicion'] * 100:.0f} % de la posición",
+            etiqueta,
             _precio_fmt(n["precio"], p),
             fmt_pct(n["distancia_pct"]),
             n["motivos"],
@@ -983,6 +989,22 @@ def _indice_por_defecto(zonas: list[dict], precio_actual: float | None) -> int:
         if abs(z["precio"] - precio_actual) < 1e-6:
             return i
     return 0
+
+
+def _recalcular_plan(a: dict) -> dict:
+    """Reconstruye `plan` (y el veredicto) a partir de un override recién
+    guardado o borrado, reutilizando `paquete`/`tecnico`/`valoracion` ya
+    calculados en `a` — SIN volver a llamar a yfinance/Finnhub/SEC. El
+    override que compara `plan_dca.construir_plan()` es siempre el que
+    devuelve Supabase en este momento, no el que había al abrir la página."""
+    ticker = a["paquete"]["ticker"]
+    override = bd_supabase.obtener_override_dca(ticker)
+    plan = plan_dca.construir_plan(a["paquete"], a["tecnico"], a["valoracion"], override=override or None)
+    veredicto = plan_dca.veredicto_final(a["calidad"], a["valoracion"], a["timing"], plan)
+    a["plan"] = plan
+    a["veredicto"] = veredicto
+    a["override_activo"] = override
+    return a
 
 
 def _override_dca(a: dict) -> None:
@@ -1030,7 +1052,9 @@ def _override_dca(a: dict) -> None:
                 format_func=lambda j: _etiqueta_zona(zonas["entradas"][j], p),
                 key=f"override_entrada_{ticker}_{i}",
             )
-            elegidas_entrada.append(zonas["entradas"][idx])
+            zona_elegida = zonas["entradas"][idx]
+            elegidas_entrada.append(zona_elegida)
+            st.caption("Componentes: " + ", ".join(zona_elegida.get("motivos") or ["—"]))
 
     elegidas_salida: list[dict] = []
     with col_s:
@@ -1046,19 +1070,23 @@ def _override_dca(a: dict) -> None:
                 format_func=lambda j: _etiqueta_zona(zonas["salidas"][j], p),
                 key=f"override_salida_{ticker}_{i}",
             )
-            elegidas_salida.append(zonas["salidas"][idx])
+            zona_elegida = zonas["salidas"][idx]
+            elegidas_salida.append(zona_elegida)
+            st.caption("Componentes: " + ", ".join(zona_elegida.get("motivos") or ["—"]))
 
     col_guardar, col_restablecer = st.columns(2)
     if col_guardar.button("Guardar selección manual", type="primary", use_container_width=True, key=f"guardar_override_{ticker}"):
         ok_e = bd_supabase.guardar_override_dca(ticker, "entrada", elegidas_entrada) if elegidas_entrada else True
         ok_s = bd_supabase.guardar_override_dca(ticker, "salida", elegidas_salida) if elegidas_salida else True
         if ok_e and ok_s:
+            st.session_state["analisis"] = _recalcular_plan(a)
             st.rerun()
         else:
             st.error("No se ha podido guardar la selección. Revisa la conexión con Supabase.")
 
     if hay_override and col_restablecer.button("Restablecer automático", use_container_width=True, key=f"reset_override_{ticker}"):
         if bd_supabase.borrar_override_dca(ticker):
+            st.session_state["analisis"] = _recalcular_plan(a)
             st.rerun()
         else:
             st.error("No se ha podido restablecer. Revisa la conexión con Supabase.")
