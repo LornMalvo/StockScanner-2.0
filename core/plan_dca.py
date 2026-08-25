@@ -659,6 +659,7 @@ def construir_plan(
         entradas = _niveles_desde_override(override["entradas"])
     else:
         entradas = _seleccionar(zonas_entrada, precio, 3, sep_entradas, ascendente=False)
+    n_entradas_manuales = len(entradas) if manual_entradas else 0
 
     # Si no se llega a los 3 niveles (automático sin confluencia suficiente, o
     # manual con menos de 3 elegidos), se completa por escalones proporcionales
@@ -680,6 +681,7 @@ def construir_plan(
             "confluencia": z["peso"],
             "motivos": z["motivos"],
             "excepcion": z.get("excepcion"),
+            "manual": i < n_entradas_manuales,
         }
         for i, z in enumerate(entradas[:3])
     ]
@@ -691,6 +693,7 @@ def construir_plan(
         salidas = _niveles_desde_override(override["salidas"])
     else:
         salidas = _seleccionar(zonas_salida, precio, 3, sep_salidas, ascendente=True)
+    n_salidas_manuales = len(salidas) if manual_salidas else 0
 
     referencia = salidas[-1]["precio"] if salidas else precio
     while len(salidas) < 3:
@@ -709,6 +712,7 @@ def construir_plan(
             "confluencia": z["peso"],
             "motivos": z["motivos"],
             "excepcion": z.get("excepcion"),
+            "manual": i < n_salidas_manuales,
         }
         for i, z in enumerate(salidas[:3])
     ]
