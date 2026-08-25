@@ -30,6 +30,7 @@ T_NIVELES = "paper_trading_niveles"
 T_EJECUCIONES = "paper_trading_ejecuciones"
 T_TRADUCCIONES = "descripciones_traducidas"
 T_CACHE_API = "cache_api"
+T_DCA_OVERRIDES = "dca_overrides"
 
 USUARIO_DEFECTO = "local"
 
@@ -847,6 +848,98 @@ def guardar_descripcion_traducida(
             },
             on_conflict="ticker",
         ).execute()
+        return True
+    except Exception:
+        return False
+
+
+# --------------------------------------------------- override manual (DCA) --
+# Selección manual de niveles del Plan DCA (Análisis Individual). Se guarda
+# como SNAPSHOT (precio, peso, motivos en el momento de elegir), no como
+# referencia a una zona: el motor recalcula las zonas en cada análisis, así
+# que un índice o ID no significaría nada la próxima vez que se abra el
+# ticker. El override queda fijo hasta que el usuario lo cambie o lo borre.
+def obtener_override_dca(ticker: str) -> dict:
+    """Devuelve `{"entradas": [...], "salidas": [...]}` con los niveles
+    guardados, cada lista ordenada por `nivel` y ya en el formato que espera
+    `core.plan_dca.construir_plan(..., override=...)`. Listas vacías si no
+    hay override guardado o no hay conexión."""
+    sb = cliente()
+    resultado = {"entradas": [], "salidas": []}
+    if sb is None:
+        return resultado
+    try:
+        filas = (
+            sb.table(T_DCA_OVERRIDES)
+            .select("*")
+            .eq("usuario_id", _usuario())
+            .eq("ticker", ticker.upper())
+            .order("nivel")
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return resultado
+    for f in filas:
+        clave = "entradas" if f.get("tipo") == "entrada" else "salidas"
+        resultado[clave].append(
+            {
+                "precio": f.get("precio"),
+                "peso": f.get("peso"),
+                "motivos": (f.get("motivos") or "").split(" · ") if f.get("motivos") else [],
+            }
+        )
+    return resultado
+
+
+def guardar_override_dca(ticker: str, tipo: str, niveles: list[dict]) -> bool:
+    """Sustituye por completo los niveles guardados de un lado (`tipo` =
+    'entrada' o 'salida') por `niveles`, una lista de hasta 3 zonas en orden
+    de nivel (cada una con `precio`, `peso`, `motivos`). Borra primero el lado
+    para no dejar niveles antiguos "huérfanos" si el usuario pasa de 3
+    selecciones a 2."""
+    sb = cliente()
+    if sb is None:
+        return False
+    ticker = ticker.upper()
+    try:
+        sb.table(T_DCA_OVERRIDES).delete().eq("usuario_id", _usuario()).eq(
+            "ticker", ticker
+        ).eq("tipo", tipo).execute()
+        if niveles:
+            sb.table(T_DCA_OVERRIDES).insert(
+                [
+                    {
+                        "usuario_id": _usuario(),
+                        "ticker": ticker,
+                        "tipo": tipo,
+                        "nivel": i + 1,
+                        "precio": float(z["precio"]),
+                        "peso": z.get("peso"),
+                        "motivos": " · ".join(z.get("motivos") or []) or None,
+                        "actualizado_en": _ahora(),
+                    }
+                    for i, z in enumerate(niveles[:3])
+                ]
+            ).execute()
+        return True
+    except Exception:
+        return False
+
+
+def borrar_override_dca(ticker: str, tipo: str | None = None) -> bool:
+    """Vuelve al cálculo automático. Sin `tipo`, borra ambos lados."""
+    sb = cliente()
+    if sb is None:
+        return False
+    try:
+        q = sb.table(T_DCA_OVERRIDES).delete().eq("usuario_id", _usuario()).eq(
+            "ticker", ticker.upper()
+        )
+        if tipo:
+            q = q.eq("tipo", tipo)
+        q.execute()
         return True
     except Exception:
         return False

@@ -495,6 +495,36 @@ def zonas_confluencia_soporte(precio: float, tecnico: dict) -> list[dict]:
     )
 
 
+def zonas_confluencia_resistencia(precio: float, tecnico: dict, fair_value: float | None = None) -> list[dict]:
+    """Zonas de resistencia agrupadas por confluencia, de la más baja a la más alta.
+
+    Simétrica a `zonas_confluencia_soporte()` y con la misma finalidad: punto
+    de entrada único al motor para el lado resistencia, en bruto y sin pasar
+    por `_seleccionar()`. Antes de esta función el cálculo vivía anidado
+    dentro de `construir_plan()` y no era reutilizable — el override manual
+    de niveles necesita exactamente este listado para poblar los desplegables
+    de salida, igual que ya usaba el de soporte.
+    """
+    if not es_valido(precio) or precio <= 0:
+        return []
+    precio = float(precio)
+    return sorted(
+        _agrupar(
+            _en_rango(
+                _candidatos_resistencia(precio, tecnico, fair_value),
+                precio,
+                _num(tecnico.get("atr")),
+                DCA_DISTANCIA_MAX_SALIDAS,
+                DCA_DISTANCIA_MIN_SALIDAS,
+            ),
+            precio,
+            _num(tecnico.get("atr")),
+            _factor_confianza(tecnico),
+        ),
+        key=lambda z: z["precio"],
+    )
+
+
 # ====================================================== selección ============
 def _cumple_separacion(
     zona: dict, referencias: list[dict], separacion: float
@@ -578,8 +608,35 @@ def _seleccionar(
     return sorted(elegidas, key=lambda z: z["precio"], reverse=not ascendente)
 
 
-def construir_plan(paquete: dict, tecnico: dict, valoracion: dict) -> dict:
-    """Genera 3 niveles de entrada, 3 de salida y 1 stop loss."""
+def _niveles_desde_override(ov_zonas: list[dict], n: int = 3) -> list[dict]:
+    """Convierte una selección manual (lista de zonas ya elegidas por el
+    usuario, en orden de nivel) al mismo formato que produce `_seleccionar()`,
+    para que el resto de `construir_plan` no tenga que distinguir origen."""
+    return [
+        {
+            "precio": float(z["precio"]),
+            "peso": float(z.get("peso") or 0.0),
+            "motivos": list(z.get("motivos") or ["Selección manual"]),
+        }
+        for z in ov_zonas[:n]
+        if es_valido(z.get("precio")) and float(z["precio"]) > 0
+    ]
+
+
+def construir_plan(
+    paquete: dict, tecnico: dict, valoracion: dict, override: dict | None = None
+) -> dict:
+    """Genera 3 niveles de entrada, 3 de salida y 1 stop loss.
+
+    `override`: selección manual opcional, con la forma
+    `{"entradas": [zona1, zona2, zona3], "salidas": [zona1, zona2, zona3]}`,
+    donde cada `zona` es uno de los elementos que devuelven
+    `zonas_confluencia_soporte()` / `zonas_confluencia_resistencia()` (trae
+    `precio`, `peso` y `motivos`). Solo hace falta informar el lado que se
+    quiera fijar a mano — el otro sigue calculándose automáticamente. Si un
+    lado trae menos de 3 zonas, el hueco se completa igual que en modo
+    automático, con el escalón técnico de respaldo.
+    """
     precio = tecnico.get("precio") or paquete.get("precio")
     if not es_valido(precio) or not tecnico.get("disponible"):
         return {"disponible": False, "motivo": "Sin precio o histórico suficiente"}
@@ -590,13 +647,22 @@ def construir_plan(paquete: dict, tecnico: dict, valoracion: dict) -> dict:
     confianza = _factor_confianza(tecnico)
     sep_entradas = _separacion_minima(precio, atr, DCA_SEPARACION_ATR_ENTRADAS)
     sep_salidas = _separacion_minima(precio, atr, DCA_SEPARACION_ATR_SALIDAS)
+    override = override or {}
 
     # ------------------------------------------------------------ entradas --
+    # Las zonas en bruto se calculan SIEMPRE, haya o no override: alimentan el
+    # diagnóstico `motor.zonas_soporte_detectadas` y, si el override no llega
+    # a 3 niveles, siguen siendo la fuente para completar el resto.
     zonas_entrada = zonas_confluencia_soporte(precio, tecnico)
-    entradas = _seleccionar(zonas_entrada, precio, 3, sep_entradas, ascendente=False)
+    manual_entradas = bool(override.get("entradas"))
+    if manual_entradas:
+        entradas = _niveles_desde_override(override["entradas"])
+    else:
+        entradas = _seleccionar(zonas_entrada, precio, 3, sep_entradas, ascendente=False)
 
-    # Si la confluencia no da los 3 niveles, se completan por escalones —ahora
-    # también proporcionales al ATR, no a un porcentaje fijo—.
+    # Si no se llega a los 3 niveles (automático sin confluencia suficiente, o
+    # manual con menos de 3 elegidos), se completa por escalones proporcionales
+    # al ATR, igual en ambos modos.
     referencia = entradas[-1]["precio"] if entradas else precio
     while len(entradas) < 3:
         siguiente = referencia * (1 - sep_entradas * 1.2)
@@ -619,19 +685,13 @@ def construir_plan(paquete: dict, tecnico: dict, valoracion: dict) -> dict:
     ]
 
     # -------------------------------------------------------------- salidas --
-    zonas_salida = _agrupar(
-        _en_rango(
-            _candidatos_resistencia(precio, tecnico, fair_value),
-            precio,
-            atr,
-            DCA_DISTANCIA_MAX_SALIDAS,
-            DCA_DISTANCIA_MIN_SALIDAS,
-        ),
-        precio,
-        atr,
-        confianza,
-    )
-    salidas = _seleccionar(zonas_salida, precio, 3, sep_salidas, ascendente=True)
+    zonas_salida = zonas_confluencia_resistencia(precio, tecnico, fair_value)
+    manual_salidas = bool(override.get("salidas"))
+    if manual_salidas:
+        salidas = _niveles_desde_override(override["salidas"])
+    else:
+        salidas = _seleccionar(zonas_salida, precio, 3, sep_salidas, ascendente=True)
+
     referencia = salidas[-1]["precio"] if salidas else precio
     while len(salidas) < 3:
         siguiente = referencia * (1 + sep_salidas * 1.2)
@@ -744,6 +804,8 @@ def construir_plan(paquete: dict, tecnico: dict, valoracion: dict) -> dict:
             "factor_confianza": confianza,
             "zonas_soporte_detectadas": len(zonas_entrada),
             "zonas_resistencia_detectadas": len(zonas_salida),
+            "entradas_manuales": manual_entradas,
+            "salidas_manuales": manual_salidas,
         },
     }
 
