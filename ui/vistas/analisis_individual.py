@@ -80,7 +80,22 @@ def ejecutar_analisis(ticker: str, incluir_noticias: bool = True) -> dict:
     fair_value = valoracion.calcular_fair_value(paquete)
     calidad = valoracion.puntuar_calidad(paquete, fair_value)
     momento = timing.calcular_timing(paquete, tecnico, fair_value, calidad)
-    plan = plan_dca.construir_plan(paquete, tecnico, fair_value)
+
+    # Zonas en bruto para los desplegables del override manual, y el propio
+    # override guardado: SOLO en Análisis Individual (incluir_noticias=True).
+    # El Rastreador reutiliza esta función para docenas de tickers por
+    # escaneo y no usa el override — pedirlo igualmente añadiría una consulta
+    # a Supabase por ticker sin ningún consumidor al otro lado.
+    if incluir_noticias:
+        zonas_entrada = plan_dca.zonas_confluencia_soporte(tecnico.get("precio"), tecnico)
+        zonas_salida = plan_dca.zonas_confluencia_resistencia(
+            tecnico.get("precio"), tecnico, fair_value.get("fair_value")
+        )
+        override = bd_supabase.obtener_override_dca(ticker) if bd_supabase.hay_conexion() else {}
+    else:
+        zonas_entrada, zonas_salida, override = [], [], {}
+
+    plan = plan_dca.construir_plan(paquete, tecnico, fair_value, override=override or None)
     veredicto = plan_dca.veredicto_final(calidad, fair_value, momento, plan)
 
     return {
@@ -91,6 +106,8 @@ def ejecutar_analisis(ticker: str, incluir_noticias: bool = True) -> dict:
         "timing": momento,
         "plan": plan,
         "veredicto": veredicto,
+        "zonas_disponibles": {"entradas": zonas_entrada, "salidas": zonas_salida},
+        "override_activo": override,
     }
 
 
@@ -919,6 +936,8 @@ def _bloque_6_plan(a: dict) -> None:
         )
         return
 
+    _override_dca(a)
+
     st.markdown("**Niveles de entrada**")
     for n in plan["entradas"]:
         C.nivel_plan(
@@ -947,6 +966,102 @@ def _bloque_6_plan(a: dict) -> None:
 
     st.divider()
     _panel_paper_trading(a, plan)
+
+
+def _etiqueta_zona(zona: dict, p: dict) -> str:
+    motivos = ", ".join(zona.get("motivos") or [])
+    return f"{_precio_fmt(zona['precio'], p)} · peso {zona.get('peso', 0):.1f} · {motivos}"
+
+
+def _indice_por_defecto(zonas: list[dict], precio_actual: float | None) -> int:
+    """Preselecciona en el desplegable la zona que ya habría elegido el
+    motor automático (o el override guardado), para que activar el modo
+    manual arranque desde el plan ya calculado y no desde cero."""
+    if precio_actual is None:
+        return 0
+    for i, z in enumerate(zonas):
+        if abs(z["precio"] - precio_actual) < 1e-6:
+            return i
+    return 0
+
+
+def _override_dca(a: dict) -> None:
+    """Interruptor de selección manual de niveles, sobre las zonas que ya
+    detecta el motor de confluencia. Solo entre las zonas detectadas — nada
+    de precio libre — y persistido en Supabase como snapshot (precio, peso,
+    motivos), no como referencia a una zona que puede dejar de existir en el
+    próximo análisis."""
+    p = a["paquete"]
+    ticker = p["ticker"]
+    zonas = a.get("zonas_disponibles") or {"entradas": [], "salidas": []}
+    plan = a["plan"]
+    conectado = bd_supabase.hay_conexion()
+
+    hay_override = bool(a.get("override_activo", {}).get("entradas") or a.get("override_activo", {}).get("salidas"))
+    etiqueta = "🔧 Ajustar niveles manualmente" + (" (override activo)" if hay_override else "")
+    activo = st.toggle(etiqueta, value=False, key=f"override_dca_{ticker}")
+    if not activo:
+        return
+
+    if not conectado:
+        st.warning("Configura SUPABASE_URL y SUPABASE_KEY para guardar una selección manual.")
+        return
+    if not zonas["entradas"] and not zonas["salidas"]:
+        st.info("El motor no ha detectado zonas de confluencia para este ticker.")
+        return
+
+    st.caption(
+        "Elige entre las zonas que ya detecta el motor. La selección sustituye al "
+        "cálculo automático hasta que la restablezcas."
+    )
+
+    col_e, col_s = st.columns(2)
+    elegidas_entrada: list[dict] = []
+    with col_e:
+        st.markdown("**Entradas**")
+        if not zonas["entradas"]:
+            st.caption("Sin zonas de soporte detectadas en rango.")
+        for i in range(min(3, len(zonas["entradas"]))):
+            actual = plan["entradas"][i]["precio"] if i < len(plan.get("entradas", [])) else None
+            idx = st.selectbox(
+                f"Entrada {i + 1}",
+                options=list(range(len(zonas["entradas"]))),
+                index=_indice_por_defecto(zonas["entradas"], actual),
+                format_func=lambda j: _etiqueta_zona(zonas["entradas"][j], p),
+                key=f"override_entrada_{ticker}_{i}",
+            )
+            elegidas_entrada.append(zonas["entradas"][idx])
+
+    elegidas_salida: list[dict] = []
+    with col_s:
+        st.markdown("**Salidas**")
+        if not zonas["salidas"]:
+            st.caption("Sin zonas de resistencia detectadas en rango.")
+        for i in range(min(3, len(zonas["salidas"]))):
+            actual = plan["salidas"][i]["precio"] if i < len(plan.get("salidas", [])) else None
+            idx = st.selectbox(
+                f"Salida {i + 1}",
+                options=list(range(len(zonas["salidas"]))),
+                index=_indice_por_defecto(zonas["salidas"], actual),
+                format_func=lambda j: _etiqueta_zona(zonas["salidas"][j], p),
+                key=f"override_salida_{ticker}_{i}",
+            )
+            elegidas_salida.append(zonas["salidas"][idx])
+
+    col_guardar, col_restablecer = st.columns(2)
+    if col_guardar.button("Guardar selección manual", type="primary", use_container_width=True, key=f"guardar_override_{ticker}"):
+        ok_e = bd_supabase.guardar_override_dca(ticker, "entrada", elegidas_entrada) if elegidas_entrada else True
+        ok_s = bd_supabase.guardar_override_dca(ticker, "salida", elegidas_salida) if elegidas_salida else True
+        if ok_e and ok_s:
+            st.rerun()
+        else:
+            st.error("No se ha podido guardar la selección. Revisa la conexión con Supabase.")
+
+    if hay_override and col_restablecer.button("Restablecer automático", use_container_width=True, key=f"reset_override_{ticker}"):
+        if bd_supabase.borrar_override_dca(ticker):
+            st.rerun()
+        else:
+            st.error("No se ha podido restablecer. Revisa la conexión con Supabase.")
 
 
 def _panel_paper_trading(a: dict, plan: dict) -> None:
