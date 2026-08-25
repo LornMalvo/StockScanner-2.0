@@ -61,6 +61,9 @@ from config.settings import (
     DCA_SEPARACION_MIN_ABS,
     DCA_SEPARACION_MIN_ENTRADAS,
     DCA_STOP_ATR_MULT,
+    DCA_STOP_CAIDA_RESPALDO,
+    DCA_STOP_MARGEN_ATR_MULT,
+    DCA_STOP_MARGEN_MAX,
     DCA_STOP_MARGEN_MIN,
     DCA_STOP_MAX_CAIDA,
     DIAGONAL_PESO,
@@ -649,22 +652,58 @@ def construir_plan(paquete: dict, tecnico: dict, valoracion: dict) -> dict:
     ]
 
     # ------------------------------------------------------------ stop loss --
+    precio_medio = sum(n["precio"] * n["peso_capital"] for n in niveles_entrada)
+    objetivo_medio = sum(n["precio"] * n["peso_posicion"] for n in niveles_salida)
+
     entrada_baja = niveles_entrada[-1]["precio"]
-    atr = tecnico.get("atr")
+    atr = _num(tecnico.get("atr"))
+
+    # 1. Regla principal: volatilidad bajo la última entrada, o estructura.
     stop_atr = entrada_baja - DCA_STOP_ATR_MULT * atr if es_valido(atr) else None
     stop_estructural = min(
         [s for s in (tecnico.get("min_52s"),) if es_valido(s) and s < entrada_baja],
         default=None,
     )
     candidatos_stop = [s for s in (stop_atr, stop_estructural) if es_valido(s)]
-    stop = min(candidatos_stop) if candidatos_stop else entrada_baja * 0.85
-    stop = max(stop, niveles_entrada[0]["precio"] * (1 - DCA_STOP_MAX_CAIDA))
-    # Coherencia del plan: un stop por encima de la última entrada significaría
-    # que el plan se detiene antes de haberse llegado a ejecutar del todo.
-    stop = min(stop, entrada_baja * (1 - DCA_STOP_MARGEN_MIN))
+    stop_regla = (
+        min(candidatos_stop)
+        if candidatos_stop
+        else entrada_baja * (1 - DCA_STOP_CAIDA_RESPALDO)
+    )
 
-    precio_medio = sum(n["precio"] * n["peso_capital"] for n in niveles_entrada)
-    objetivo_medio = sum(n["precio"] * n["peso_posicion"] for n in niveles_salida)
+    # 2. Techo de coherencia: el stop debe quedar por debajo de la última
+    #    entrada con un margen proporcional al ATR. Un margen porcentual fijo
+    #    dejaba el stop a media sesión de distancia en valores volátiles.
+    margen = DCA_STOP_MARGEN_MIN
+    if es_valido(atr) and entrada_baja > 0:
+        margen = max(margen, DCA_STOP_MARGEN_ATR_MULT * atr / entrada_baja)
+    margen = min(margen, DCA_STOP_MARGEN_MAX)
+    techo = entrada_baja * (1 - margen)
+
+    # 3. Suelo de pérdida máxima, medido sobre el COSTE MEDIO del plan. Se
+    #    subordina al techo: la coherencia de la escalera manda siempre, así
+    #    que el suelo nunca puede volver a empujar el stop contra N3.
+    suelo = min(precio_medio * (1 - DCA_STOP_MAX_CAIDA), techo)
+
+    stop = min(max(stop_regla, suelo), techo)
+
+    # Etiqueta honesta: qué regla ha fijado realmente el precio final.
+    if abs(stop - techo) < 1e-9:
+        base_stop = (
+            f"Margen mínimo bajo la entrada 3 ({margen * 100:.1f}%, "
+            f"{DCA_STOP_MARGEN_ATR_MULT}x ATR)"
+            if es_valido(atr) and margen > DCA_STOP_MARGEN_MIN + 1e-9
+            else f"Margen mínimo bajo la entrada 3 ({margen * 100:.1f}%)"
+        )
+    elif abs(stop - suelo) < 1e-9:
+        base_stop = f"Pérdida máxima del {DCA_STOP_MAX_CAIDA * 100:.0f}% sobre el coste medio"
+    elif es_valido(stop_atr) and abs(stop - stop_atr) < 1e-9:
+        base_stop = f"ATR(14) x {DCA_STOP_ATR_MULT} bajo la entrada 3"
+    elif es_valido(stop_estructural) and abs(stop - stop_estructural) < 1e-9:
+        base_stop = "Estructural (mínimo de 52 semanas)"
+    else:
+        base_stop = f"Respaldo ({DCA_STOP_CAIDA_RESPALDO * 100:.0f}% bajo la entrada 3)"
+
     riesgo = precio_medio - stop
     recompensa = objetivo_medio - precio_medio
 
@@ -676,7 +715,19 @@ def construir_plan(paquete: dict, tecnico: dict, valoracion: dict) -> dict:
         "stop_loss": {
             "precio": stop,
             "distancia_pct": (stop / precio - 1) * 100,
-            "base": "ATR(14) x 2,5 sobre la última entrada" if es_valido(stop_atr) else "Estructural",
+            "distancia_entrada3_pct": (stop / entrada_baja - 1) * 100,
+            "perdida_sobre_medio_pct": (stop / precio_medio - 1) * 100 if precio_medio else None,
+            "base": base_stop,
+            # Trazabilidad: permite ver qué proponía cada regla sin rehacer el
+            # cálculo a mano desde el auditor.
+            "candidatos": {
+                "atr": stop_atr,
+                "estructural": stop_estructural,
+                "regla": stop_regla,
+                "suelo_coste_medio": suelo,
+                "techo_margen": techo,
+                "margen_pct": margen * 100,
+            },
         },
         "precio_medio_estimado": precio_medio,
         "objetivo_medio_estimado": objetivo_medio,
