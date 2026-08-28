@@ -13,15 +13,17 @@ from config.settings import (
     C_PRIMARIO,
     C_ROJO,
     C_TEAL,
+    C_TEXTO_TENUE,
     C_VERDE,
     GRAFICO_ALTO,
+    GRAFICO_BARRAS_ALTO,
     GRAFICO_PROPORCION_FILAS,
     PLAN_COLOR_STOP,
     PLAN_COLORES_ENTRADA,
     PLAN_COLORES_SALIDA,
     TEXTO_ND,
 )
-from utils.formato import es_valido, fmt_num, fmt_pct
+from utils.formato import es_valido, fmt_compacto, fmt_num, fmt_pct
 
 
 def titulo_bloque(texto: str) -> None:
@@ -129,6 +131,8 @@ def mini_ficha(
     filas: list[tuple[str, str]],
     aparte: str | None = None,
     etiqueta_estado: tuple[str, str] | None = None,
+    pie: str | None = None,
+    color_pie: str | None = None,
 ) -> None:
     """Tarjeta compacta de una posición, para la rejilla de Cartera y Paper
     Trading.
@@ -139,6 +143,9 @@ def mini_ficha(
     en una línea y de dos o tres métricas de apoyo. El detalle completo se
     abre bajo demanda, así que nada se pierde: solo deja de ocupar pantalla
     de forma permanente.
+
+    `pie` es una línea de contexto al final de la tarjeta -- en Paper Trading,
+    la distancia que le falta al precio para tocar la Entrada 1 del plan.
 
     Todo se pinta en un único `st.markdown` para que las filas queden dentro
     del contenedor `.ss-mini` y hereden su interlineado comprimido. El botón
@@ -159,12 +166,95 @@ def mini_ficha(
         f"<span>{html.escape(v)}</span></div>"
         for e, v in filas
     )
+    pie_html = (
+        f'<div class="ss-mini-pie" style="color:{color_pie or C_TEXTO_TENUE}">'
+        f"{html.escape(pie)}</div>"
+        if pie
+        else ""
+    )
     st.markdown(
         f'<div class="ss-mini"><div class="ss-mini-cab">{cabecera}</div>'
         f"{estado_html}"
         f'<div class="ss-mini-dest" style="color:{color_destacado}">{html.escape(destacado)}</div>'
-        f'<div class="ss-mini-sub">{html.escape(subtexto)}</div>{cuerpo}</div>',
+        f'<div class="ss-mini-sub">{html.escape(subtexto)}</div>{cuerpo}{pie_html}</div>',
         unsafe_allow_html=True,
+    )
+
+
+def _barras_horizontales(
+    etiquetas: list[str], valores: list, titulo: str, formateador, alto: int = GRAFICO_BARRAS_ALTO
+) -> None:
+    """Barras horizontales sin ejes: la etiqueta y el valor van sobre la barra.
+
+    Pensado para una columna estrecha. Se dibuja con el eje Y invertido
+    porque Plotly apila de abajo a arriba y las series llegan en orden
+    cronológico (el trimestre más antiguo primero).
+    """
+    validos = [v for v in valores if es_valido(v)]
+    if not validos:
+        st.markdown(
+            f'<div class="ss-mini-tit">{html.escape(titulo)}</div>'
+            f'<div class="ss-nd">{TEXTO_ND}</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    colores = [C_ROJO if es_valido(v) and float(v) < 0 else C_AZUL for v in valores]
+    fig = go.Figure(
+        go.Bar(
+            x=[float(v) if es_valido(v) else 0 for v in valores],
+            y=list(etiquetas),
+            orientation="h",
+            marker_color=colores,
+            text=[formateador(v) if es_valido(v) else TEXTO_ND for v in valores],
+            textposition="auto",
+            insidetextanchor="start",
+            hoverinfo="skip",
+        )
+    )
+    # Rango simétrico alrededor del cero cuando hay negativos: así el eje
+    # cero queda donde debe y una barra negativa no se dibuja como positiva.
+    minimo, maximo = min(validos), max(validos)
+    holgura = (maximo - minimo) * 0.18 or abs(maximo) * 0.18 or 1
+    fig.update_layout(
+        height=alto,
+        margin=dict(l=4, r=4, t=20, b=4),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+        bargap=0.28,
+        title=dict(text=titulo, font=dict(size=12), x=0, xanchor="left", y=0.99),
+        font=dict(size=10),
+        uniformtext=dict(minsize=8, mode="hide"),
+    )
+    fig.update_xaxes(visible=False, range=[min(0, minimo) - holgura, max(0, maximo) + holgura])
+    fig.update_yaxes(autorange="reversed", showgrid=False, ticksuffix="  ")
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def evolucion_trimestral(series: dict, moneda: str | None = None) -> None:
+    """BPA, ingresos, margen neto y FCF de los últimos trimestres, en barras.
+
+    Cuatro minigráficos sobre el MISMO eje de periodos: se leen en vertical
+    para ver de un vistazo si el margen se estrecha mientras los ingresos
+    crecen, o si el FCF acompaña al beneficio -- un cruce que una tabla de
+    cifras sueltas no deja ver.
+    """
+    periodos = series.get("periodos") or []
+    if not periodos:
+        st.markdown(f'<div class="ss-nd">{TEXTO_ND}</div>', unsafe_allow_html=True)
+        return
+
+    simbolo = " $" if (moneda or "").upper() == "USD" else (f" {moneda}" if moneda else "")
+    _barras_horizontales(periodos, series.get("bpa"), "BPA diluido", lambda v: fmt_num(v))
+    _barras_horizontales(
+        periodos, series.get("ingresos"), "Ingresos", lambda v: fmt_compacto(v, simbolo)
+    )
+    _barras_horizontales(
+        periodos, series.get("margen_neto"), "Margen neto", lambda v: fmt_num(v, 1, " %")
+    )
+    _barras_horizontales(
+        periodos, series.get("fcf"), "Flujo de caja libre", lambda v: fmt_compacto(v, simbolo)
     )
 
 

@@ -143,6 +143,13 @@ div[data-testid="stVerticalBlockBorderWrapper"] {{ border-radius: 18px; }}
 /* Filas de apoyo más apretadas y sin la línea de separación: dentro de una
    tarjeta pequeña, el punteado de .ss-metrica satura. */
 .ss-mini .ss-metrica {{ padding: .12rem 0; border-bottom: 0; font-size: .8rem; }}
+.ss-mini-pie {{
+  font-size: .76rem; font-weight: 600; margin-top: .3rem;
+  padding-top: .3rem; border-top: 1px dashed var(--ss-borde);
+}}
+
+/* Título de los minigráficos de barras cuando no hay dato que dibujar. */
+.ss-mini-tit {{ font-size: .75rem; font-weight: 600; margin: .35rem 0 .1rem; }}
 
 /* --- anotaciones al pie (p. ej. tipo de cambio aplicado) --- */
 .ss-anotacion {{
