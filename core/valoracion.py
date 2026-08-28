@@ -664,6 +664,42 @@ def series_trimestrales(paquete: dict, trimestres: int = TRIMESTRES_EVOLUCION) -
     }
 
 
+def racha_sorpresas(historial: list, trimestres: int = TRIMESTRES_EVOLUCION) -> dict:
+    """Resume el historial de sorpresas de BPA de Finnhub.
+
+    `earnings["historial"]` trae hasta 8 trimestres (EPS real, estimado,
+    sorpresa %) y se descargaba en cada análisis sin que ningún módulo lo
+    consumiera. Devuelve los N más recientes (del más reciente al más
+    antiguo, que es como se lee una racha) y el recuento de veces que se
+    superó la estimación.
+    """
+    if not historial:
+        return {"trimestres": [], "superados": 0, "total": 0}
+
+    filas = []
+    for t in historial[:trimestres]:
+        real = num(t.get("actual"))
+        estimado = num(t.get("estimate"))
+        sorpresa = num(t.get("surprisePercent"))
+        if not es_valido(sorpresa) and es_valido(real) and es_valido(estimado) and estimado:
+            sorpresa = (real - estimado) / abs(estimado) * 100
+        filas.append(
+            {
+                "periodo": t.get("period"),
+                "real": real,
+                "estimado": estimado,
+                "sorpresa_pct": sorpresa,
+                "supera": (real > estimado) if es_valido(real) and es_valido(estimado) else None,
+            }
+        )
+    comparables = [f for f in filas if f["supera"] is not None]
+    return {
+        "trimestres": filas,
+        "superados": sum(1 for f in comparables if f["supera"]),
+        "total": len(comparables),
+    }
+
+
 def _consenso_ponderable(consenso: dict) -> tuple[float | None, float]:
     """Devuelve (precio objetivo, multiplicador de peso 1 o 2).
 
