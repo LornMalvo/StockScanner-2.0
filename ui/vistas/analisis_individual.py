@@ -279,6 +279,9 @@ def _bloque_2_descripcion(a: dict) -> None:
         texto += f"  (en {dias} días)"
     C.metrica("Próxima presentación de resultados", texto)
 
+    st.markdown("**Racha de sorpresas de resultados**")
+    C.racha_sorpresas(valoracion.racha_sorpresas(p.get("earnings", {}).get("historial") or []))
+
     st.markdown(f"**Evolución de los últimos {TRIMESTRES_EVOLUCION} trimestres**")
     C.evolucion_trimestral(valoracion.series_trimestrales(p), p.get("moneda"))
 
