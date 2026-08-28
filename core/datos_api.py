@@ -634,6 +634,17 @@ def obtener_estados_financieros(ticker: str) -> dict:
         "balance": lambda: t.balance_sheet,
         "flujo_caja": lambda: t.cashflow,
         "resultados_trim": lambda: t.quarterly_income_stmt,
+        # Necesario para el FCF trimestral del Bloque 2 (evolución de BPA /
+        # ingresos / margen / FCF). Comprobado con la sesión real de
+        # yfinance: income, balance, cashflow (anuales), income trimestral y
+        # cashflow trimestral son CINCO endpoints distintos de Yahoo -- no
+        # existe combinación pública que traiga el FCF trimestral dentro de
+        # ninguna de las cuatro llamadas que ya se hacían. Esta es la única
+        # petición nueva de todo el cambio; cae bajo el mismo TTL largo y el
+        # mismo respaldo L2 que el resto de `obtener_estados_financieros()`,
+        # así que en régimen se paga una vez cada `TTL_ESTADOS_FINANCIEROS`
+        # por ticker, no una vez por análisis.
+        "flujo_caja_trim": lambda: t.quarterly_cashflow,
     }
     salida: dict[str, pd.DataFrame] = {}
     for nombre, obtener in campos.items():

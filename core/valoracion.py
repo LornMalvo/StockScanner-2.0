@@ -54,6 +54,7 @@ from config.settings import (
     PESOS_CALIDAD,
     PESOS_FAIR_VALUE,
     ROE_MEDIANO_SECTOR,
+    TRIMESTRES_EVOLUCION,
 )
 from utils.formato import es_valido, escalar, num, ponderar, primero_valido
 
@@ -581,6 +582,86 @@ def calcular_per_historico(paquete: dict, anios: int = 5) -> float | None:
     # infla la media pero apenas mueve la mediana.
     validos = [p for p in pers if 0 < p < 100]
     return statistics.median(validos) if validos else None
+
+
+def _serie_trimestral(df: pd.DataFrame | None, periodos: list, *etiquetas: str) -> list:
+    """Valores de una partida para una lista concreta de columnas (periodos).
+
+    El eje de periodos se pasa desde fuera para que las cuatro series (BPA,
+    ingresos, margen, FCF) queden ALINEADAS trimestre a trimestre aunque a
+    una le falte un dato: si falta, va `None` y el gráfico deja el hueco en
+    su sitio, en vez de desplazar la serie un trimestre y comparar peras con
+    manzanas.
+    """
+    serie = fila(df, *etiquetas)
+    if serie is None:
+        return [None] * len(periodos)
+    return [num(serie.loc[p]) if p in serie.index else None for p in periodos]
+
+
+def _etiqueta_trimestre(periodo) -> str:
+    """'2026-06-30' -> '2T26'. Si no se puede interpretar, se deja tal cual."""
+    try:
+        ts = pd.Timestamp(periodo)
+    except Exception:
+        return str(periodo)[:10]
+    return f"{(ts.month - 1) // 3 + 1}T{ts.year % 100:02d}"
+
+
+def series_trimestrales(paquete: dict, trimestres: int = TRIMESTRES_EVOLUCION) -> dict:
+    """BPA, ingresos, margen neto y FCF de los últimos N trimestres cerrados.
+
+    Devuelve las cuatro series ya alineadas sobre el mismo eje de periodos
+    (del más antiguo al más reciente, que es como se lee una evolución) para
+    que la interfaz solo tenga que pintarlas.
+
+    El eje de periodos lo marca la cuenta de resultados trimestral (trae tres
+    de las cuatro magnitudes); el flujo de caja trimestral se reindexa contra
+    ella.
+    """
+    estados = paquete.get("estados", {})
+    resultados = estados.get("resultados_trim")
+    flujo = estados.get("flujo_caja_trim")
+    vacio = {"periodos": [], "bpa": [], "ingresos": [], "margen_neto": [], "fcf": []}
+    if resultados is None or getattr(resultados, "empty", True):
+        return vacio
+
+    # Columnas ordenadas de más reciente a más antigua: se cogen las N
+    # primeras y se invierte, para que el gráfico se lea en orden cronológico.
+    periodos = list(resultados.columns)[:trimestres][::-1]
+    if not periodos:
+        return vacio
+
+    ingresos = _serie_trimestral(resultados, periodos, "Total Revenue", "Operating Revenue")
+    beneficio = _serie_trimestral(
+        resultados, periodos, "Net Income", "Net Income Common Stockholders"
+    )
+    bpa = _serie_trimestral(resultados, periodos, "Diluted EPS", "Basic EPS")
+    fcf = _serie_trimestral(flujo, periodos, "Free Cash Flow")
+
+    # Respaldo si la fila "Free Cash Flow" no viene: caja operativa menos
+    # capex (que en Yahoo llega en negativo, de ahí la suma).
+    if not any(es_valido(x) for x in fcf):
+        ocf = _serie_trimestral(
+            flujo, periodos, "Operating Cash Flow", "Total Cash From Operating Activities"
+        )
+        capex = _serie_trimestral(flujo, periodos, "Capital Expenditure")
+        fcf = [
+            (o + c) if es_valido(o) and es_valido(c) else None for o, c in zip(ocf, capex)
+        ]
+
+    margen = [
+        (b / i * 100) if es_valido(b) and es_valido(i) and i else None
+        for b, i in zip(beneficio, ingresos)
+    ]
+
+    return {
+        "periodos": [_etiqueta_trimestre(p) for p in periodos],
+        "bpa": bpa,
+        "ingresos": ingresos,
+        "margen_neto": margen,
+        "fcf": fcf,
+    }
 
 
 def _consenso_ponderable(consenso: dict) -> tuple[float | None, float]:
