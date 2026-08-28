@@ -269,6 +269,41 @@ def _niveles_plan(pos: dict, niveles: list[dict], resumen: dict) -> None:
             C.metrica("Stop loss", _precio_fmt_nativo(stop["precio"], moneda))
 
 
+def _distancia_entrada1(pos: dict, niveles: list[dict], resumen: dict) -> tuple[str | None, str | None]:
+    """Cuánto le falta al precio para tocar la Entrada 1 del plan.
+
+    Es la pregunta que se hace todos los días mirando la rejilla y que hasta
+    ahora obligaba a abrir el detalle. Devuelve (texto, color); (None, None)
+    cuando la pregunta ya no aplica: entrada ya ejecutada, plan cerrado o
+    descartado, o sin precio de mercado con el que comparar.
+
+    La distancia se mide en la DIVISA NATIVA del valor (dólares, no euros):
+    el nivel del plan está en esa divisa y el precio de cotización también,
+    así que meter el tipo de cambio por medio solo introduciría ruido en un
+    número que únicamente sirve para saber si ya toca comprar.
+    """
+    if pos.get("estado") in (*PAPER_ESTADOS_CERRADOS, *PAPER_ESTADOS_DESCARTADOS):
+        return None, None
+    entrada1 = next(
+        (n for n in niveles if n.get("tipo") == "entrada" and n.get("nivel") == 1), None
+    )
+    if not entrada1 or entrada1.get("ejecutado") or not es_valido(entrada1.get("precio")):
+        return None, None
+    precio = resumen.get("precio_actual_nativo")
+    if not es_valido(precio):
+        return None, None
+
+    objetivo = float(entrada1["precio"])
+    if objetivo <= 0:
+        return None, None
+    moneda = pos.get("divisa_cotizacion")
+    nivel_txt = _precio_fmt_nativo(objetivo, moneda)
+    distancia = (float(precio) / objetivo - 1) * 100
+    if distancia <= 0:
+        return f"Nivel de Entrada 1 alcanzado ({nivel_txt})", C_VERDE
+    return f"A {fmt_num(distancia, 1)} % del Nivel de Entrada 1 ({nivel_txt})", C_TEXTO_TENUE
+
+
 # --------------------------------------------------------------- rejilla ----
 # Mismo criterio que en Gestión de Cartera: rejilla de fichas compactas de 3
 # en fondo y detalle completo bajo demanda. Un plan en vigilancia no necesita
@@ -278,7 +313,7 @@ _COLUMNAS_REJILLA = 3
 _CLAVE_DETALLE = "detalle_paper"
 
 
-def _mini(pos: dict, resumen: dict) -> None:
+def _mini(pos: dict, niveles: list[dict], resumen: dict) -> None:
     estado = pos["estado"]
     etiqueta_estado = PAPER_ESTADOS.get(estado, (estado, C_TEXTO_TENUE))
     progreso = resumen["progreso"]
@@ -314,6 +349,8 @@ def _mini(pos: dict, resumen: dict) -> None:
         ),
     ]
 
+    pie, color_pie = _distancia_entrada1(pos, niveles, resumen)
+
     with st.container(border=True):
         C.mini_ficha(
             pos["ticker"],
@@ -323,6 +360,8 @@ def _mini(pos: dict, resumen: dict) -> None:
             filas,
             aparte=fmt_fecha(pos.get("abierta_en")),
             etiqueta_estado=etiqueta_estado,
+            pie=pie,
+            color_pie=color_pie,
         )
         abierto = st.session_state.get(_CLAVE_DETALLE) == pos["id"]
         if st.button(
@@ -340,7 +379,7 @@ def _rejilla(posiciones: list[dict], niveles: dict, resumenes: dict) -> None:
         columnas = st.columns(_COLUMNAS_REJILLA)
         for columna, pos in zip(columnas, tramo):
             with columna:
-                _mini(pos, resumenes[pos["id"]])
+                _mini(pos, niveles.get(pos["id"], []), resumenes[pos["id"]])
 
     seleccionado = st.session_state.get(_CLAVE_DETALLE)
     pos = next((p for p in posiciones if p["id"] == seleccionado), None)

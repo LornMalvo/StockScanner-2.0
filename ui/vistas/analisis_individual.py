@@ -35,6 +35,7 @@ from config.settings import (
     ROE_MEDIANO_SECTOR,
     ROIC_MEDIANO_SECTOR,
     TEXTO_ND,
+    TRIMESTRES_EVOLUCION,
 )
 from core import alertas_telegram, bd_supabase, datos_api, indicadores, plan_dca, timing, traduccion, valoracion
 from ui import componentes as C
@@ -278,6 +279,9 @@ def _bloque_2_descripcion(a: dict) -> None:
         texto += f"  (en {dias} días)"
     C.metrica("Próxima presentación de resultados", texto)
 
+    st.markdown(f"**Evolución de los últimos {TRIMESTRES_EVOLUCION} trimestres**")
+    C.evolucion_trimestral(valoracion.series_trimestrales(p), p.get("moneda"))
+
 
 def _linea_sorpresa(concepto: str, real, estimado) -> None:
     etiqueta = f"¿{concepto} superó estimaciones?"
@@ -347,6 +351,7 @@ def _bloque_3_grafico(a: dict) -> None:
         _fila_distancia("Mínimo 52 semanas", t.get("min_52s"), precio, fx)
         C.metrica("Variación 1 año", fmt_pct(t.get("variacion_1a_pct")))
         C.metrica("Volumen medio 3 meses", fmt_compacto(t.get("volumen_medio_3m")))
+        _filas_riesgo_mercado(info)
 
     if es_valido(fx):
         st.markdown(
@@ -358,6 +363,90 @@ def _bloque_3_grafico(a: dict) -> None:
         st.markdown(
             f'<div class="ss-anotacion">Conversión a euros: {TEXTO_ND}.</div>', unsafe_allow_html=True
         )
+
+
+def _filas_riesgo_mercado(info: dict) -> None:
+    """Short interest, short ratio y beta: tres datos ya descargados en
+    `info` de yfinance que no se mostraban en ninguna parte de la app.
+
+    Short interest y short ratio son relevantes para un plan DCA: un valor
+    con una parte grande del flotante en corto apoyándose en un soporte se
+    comporta distinto de uno sin presión bajista, tanto al caer (la presión
+    vendedora puede acelerar la caída) como al rebotar (recompras forzadas
+    de las posiciones cortas amplifican el rebote). La beta sitúa el valor
+    frente al mercado: cuánto se mueve por cada punto que se mueve el S&P.
+
+    El nivel se anota junto al dato en vez de colorearlo: ninguno de los
+    tres es "malo" ni "bueno" por sí solo -- depende del contexto -- y
+    pintarlo de rojo/verde sugeriría un juicio que el dato no soporta.
+    """
+    corto_pct = primero_valido(info.get("shortPercentOfFloat"))
+    if es_valido(corto_pct):
+        # yfinance lo da en tanto por uno (0,1186 = 11,86 % del flotante).
+        pct = float(corto_pct) * 100
+        C.metrica_nota("Short interest (% flotante)", fmt_num(pct, 2, " %"), _nivel_corto(pct))
+    else:
+        C.metrica("Short interest (% flotante)", TEXTO_ND)
+
+    ratio = primero_valido(info.get("shortRatio"))
+    if es_valido(ratio):
+        C.metrica_nota(
+            "Short ratio (días para cubrir)",
+            fmt_num(ratio, 2),
+            _nivel_short_ratio(float(ratio)),
+        )
+    else:
+        C.metrica("Short ratio (días para cubrir)", TEXTO_ND)
+
+    beta = primero_valido(info.get("beta"))
+    if es_valido(beta):
+        C.metrica_nota("Beta (β)", fmt_num(float(beta), 2), _nivel_beta(float(beta)))
+    else:
+        C.metrica("Beta (β)", TEXTO_ND)
+
+
+def _nivel_corto(pct: float) -> str:
+    """Zona del % del flotante en corto. Cortes habituales del mercado."""
+    if pct < 2:
+        return "Muy bajo"
+    if pct < 5:
+        return "Bajo"
+    if pct < 10:
+        return "Moderado"
+    if pct < 20:
+        return "Alto"
+    return "Muy alto"
+
+
+def _nivel_short_ratio(ratio: float) -> str:
+    """Días de volumen medio que harían falta para cerrar todos los cortos.
+
+    Por encima de ~5 días el mercado empieza a considerar que hay riesgo de
+    short squeeze: cerrar las posiciones exige más volumen del que el valor
+    negocia en una semana.
+    """
+    if ratio < 1:
+        return "Muy bajo"
+    if ratio < 3:
+        return "Bajo"
+    if ratio < 5:
+        return "Moderado"
+    if ratio < 8:
+        return "Alto"
+    return "Muy alto"
+
+
+def _nivel_beta(beta: float) -> str:
+    """Sensibilidad frente al mercado: beta 1 = se mueve como el índice."""
+    if beta < 0:
+        return "Inversa al mercado"
+    if beta < 0.8:
+        return "Defensiva"
+    if beta < 1.2:
+        return "En línea con el mercado"
+    if beta < 1.6:
+        return "Agresiva"
+    return "Muy agresiva"
 
 
 def _toggle_plan_dca(a: dict) -> dict | None:
