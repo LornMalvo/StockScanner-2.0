@@ -9,6 +9,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from config.settings import (
+    C_AMBAR,
     C_AZUL,
     C_PRIMARIO,
     C_ROJO,
@@ -23,7 +24,7 @@ from config.settings import (
     PLAN_COLORES_SALIDA,
     TEXTO_ND,
 )
-from utils.formato import es_valido, fmt_compacto, fmt_num, fmt_pct
+from utils.formato import es_valido, fmt_compacto, fmt_fecha, fmt_num, fmt_pct
 
 
 def titulo_bloque(texto: str) -> None:
@@ -179,6 +180,53 @@ def mini_ficha(
         f'<div class="ss-mini-sub">{html.escape(subtexto)}</div>{cuerpo}{pie_html}</div>',
         unsafe_allow_html=True,
     )
+
+
+def racha_sorpresas(resumen: dict) -> None:
+    """Tabla compacta de sorpresas de BPA de los últimos trimestres.
+
+    Consume `core.valoracion.racha_sorpresas()`, que a su vez explota
+    `earnings["historial"]` -- un dato que se descargaba en cada análisis y
+    no leía ningún módulo. Un equipo directivo que guía conservador y bate
+    de forma sistemática es información distinta de un batacazo aislado, y
+    hasta ahora solo se veía el último trimestre suelto, sin contexto.
+    """
+    filas = resumen.get("trimestres") or []
+    if not filas:
+        st.markdown(f'<div class="ss-nd">{TEXTO_ND}</div>', unsafe_allow_html=True)
+        return
+
+    total = resumen.get("total") or 0
+    if total:
+        superados = resumen.get("superados") or 0
+        color = C_VERDE if superados * 2 > total else (C_ROJO if superados * 2 < total else C_AMBAR)
+        st.markdown(
+            f'<div class="ss-racha-tit" style="color:{color}">Superó estimaciones en '
+            f"{superados} de los últimos {total} trimestres</div>",
+            unsafe_allow_html=True,
+        )
+
+    celdas = ['<div class="ss-racha">']
+    celdas.append(
+        '<div class="ss-racha-fila ss-racha-cab"><span>Periodo</span>'
+        "<span>Real</span><span>Est.</span><span>Sorpresa</span></div>"
+    )
+    for f in filas:
+        s = f.get("sorpresa_pct")
+        if not es_valido(s):
+            color, texto = C_TEXTO_TENUE, TEXTO_ND
+        else:
+            color = C_VERDE if float(s) > 0.5 else (C_ROJO if float(s) < -0.5 else C_TEXTO_TENUE)
+            texto = fmt_pct(s)
+        celdas.append(
+            '<div class="ss-racha-fila">'
+            f"<span>{html.escape(fmt_fecha(f.get('periodo')))}</span>"
+            f"<span>{html.escape(fmt_num(f.get('real')))}</span>"
+            f"<span>{html.escape(fmt_num(f.get('estimado')))}</span>"
+            f'<span style="color:{color};font-weight:600">{html.escape(texto)}</span></div>'
+        )
+    celdas.append("</div>")
+    st.markdown("".join(celdas), unsafe_allow_html=True)
 
 
 def _barras_horizontales(

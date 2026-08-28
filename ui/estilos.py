@@ -148,6 +148,17 @@ div[data-testid="stVerticalBlockBorderWrapper"] {{ border-radius: 18px; }}
   padding-top: .3rem; border-top: 1px dashed var(--ss-borde);
 }}
 
+/* --- racha de sorpresas de resultados (Bloque 2) --- */
+.ss-racha-tit {{ font-size: .82rem; font-weight: 700; margin: .1rem 0 .3rem; }}
+.ss-racha {{ font-size: .76rem; font-variant-numeric: tabular-nums; }}
+.ss-racha-fila {{
+  display: grid; grid-template-columns: 1.5fr 1fr 1fr 1.2fr;
+  gap: .3rem; padding: .16rem 0; border-bottom: 1px solid var(--ss-borde);
+}}
+.ss-racha-fila > span:not(:first-child) {{ text-align: right; }}
+.ss-racha-cab {{ color: var(--ss-tenue); font-weight: 600; border-bottom-width: 2px; }}
+.ss-racha-fila:last-child {{ border-bottom: 0; }}
+
 /* Título de los minigráficos de barras cuando no hay dato que dibujar. */
 .ss-mini-tit {{ font-size: .75rem; font-weight: 600; margin: .35rem 0 .1rem; }}
 
