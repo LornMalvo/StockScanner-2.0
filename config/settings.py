@@ -48,6 +48,15 @@ PLAN_COLOR_STOP = C_ROJO
 GRAFICO_ALTO = 560
 GRAFICO_PROPORCION_FILAS = (0.75, 0.25)  # precio / MACD
 
+# ------------------------------------- evolución trimestral (Bloque 2) ----
+# Nº de trimestres que muestran los gráficos de BPA / ingresos / margen neto
+# / FCF. Cuatro cubre un año completo, el mínimo para que el efecto
+# estacional del propio negocio no distorsione la lectura.
+TRIMESTRES_EVOLUCION = 4
+# Alto de cada minigráfico de barras horizontales. Deliberadamente pequeño:
+# son gráficos de contexto en una columna estrecha, no protagonistas.
+GRAFICO_BARRAS_ALTO = 130
+
 # ------------------------------------------------------------ navegación ----
 SECCIONES = [
     "Análisis Individual",
