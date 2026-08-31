@@ -162,6 +162,13 @@ div[data-testid="stVerticalBlockBorderWrapper"] {{ border-radius: 18px; }}
 /* Título de los minigráficos de barras cuando no hay dato que dibujar. */
 .ss-mini-tit {{ font-size: .75rem; font-weight: 600; margin: .35rem 0 .1rem; }}
 
+/* Lectura en una línea de la comparativa de PER (cara / barata). */
+.ss-per-mensaje {{
+  font-size: .8rem; font-weight: 600; margin-top: -.4rem;
+  padding: .35rem .5rem; border-left: 3px solid var(--ss-primario);
+  background: rgba(255,255,255,.03); border-radius: 0 4px 4px 0;
+}}
+
 /* --- anotaciones al pie (p. ej. tipo de cambio aplicado) --- */
 .ss-anotacion {{
   color: var(--ss-tenue); font-size: .68rem; font-style: italic; margin-top: .2rem;

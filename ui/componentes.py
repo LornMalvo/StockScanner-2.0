@@ -18,13 +18,14 @@ from config.settings import (
     C_VERDE,
     GRAFICO_ALTO,
     GRAFICO_BARRAS_ALTO,
+    GRAFICO_PER_ALTO,
     GRAFICO_PROPORCION_FILAS,
     PLAN_COLOR_STOP,
     PLAN_COLORES_ENTRADA,
     PLAN_COLORES_SALIDA,
     TEXTO_ND,
 )
-from utils.formato import es_valido, fmt_compacto, fmt_fecha, fmt_num, fmt_pct
+from utils.formato import es_valido, fmt_fecha, fmt_num, fmt_pct
 
 
 def titulo_bloque(texto: str) -> None:
@@ -230,13 +231,21 @@ def racha_sorpresas(resumen: dict) -> None:
 
 
 def _barras_horizontales(
-    etiquetas: list[str], valores: list, titulo: str, formateador, alto: int = GRAFICO_BARRAS_ALTO
+    etiquetas: list[str],
+    valores: list,
+    titulo: str,
+    formateador,
+    alto: int = GRAFICO_BARRAS_ALTO,
+    colores: list[str] | None = None,
 ) -> None:
     """Barras horizontales sin ejes: la etiqueta y el valor van sobre la barra.
 
     Pensado para una columna estrecha. Se dibuja con el eje Y invertido
-    porque Plotly apila de abajo a arriba y las series llegan en orden
-    cronológico (el trimestre más antiguo primero).
+    porque Plotly apila de abajo a arriba y las etiquetas llegan en el orden
+    en que deben leerse (de arriba abajo).
+
+    `colores` permite dar un color por barra cuando cada una significa algo
+    distinto (la comparativa de PER); si se omite, se colorea por signo.
     """
     validos = [v for v in valores if es_valido(v)]
     if not validos:
@@ -247,7 +256,8 @@ def _barras_horizontales(
         )
         return
 
-    colores = [C_ROJO if es_valido(v) and float(v) < 0 else C_AZUL for v in valores]
+    if colores is None:
+        colores = [C_ROJO if es_valido(v) and float(v) < 0 else C_AZUL for v in valores]
     fig = go.Figure(
         go.Bar(
             x=[float(v) if es_valido(v) else 0 for v in valores],
@@ -280,30 +290,42 @@ def _barras_horizontales(
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
-def evolucion_trimestral(series: dict, moneda: str | None = None) -> None:
-    """BPA, ingresos, margen neto y FCF de los últimos trimestres, en barras.
+def comparativa_per(pers: dict, mensaje: str | None = None) -> None:
+    """PER actual frente a forward, histórico propio y mediana del sector.
 
-    Cuatro minigráficos sobre el MISMO eje de periodos: se leen en vertical
-    para ver de un vistazo si el margen se estrecha mientras los ingresos
-    crecen, o si el FCF acompaña al beneficio -- un cruce que una tabla de
-    cifras sueltas no deja ver.
+    Los cuatro números ya existían por separado (dos en `info`, uno en
+    `calcular_per_historico()`, otro en la tabla sectorial de `settings`);
+    juntos responden de un vistazo a "¿está cara?" con las tres referencias
+    que importan: su propio futuro, su propia historia y sus comparables.
+
+    El PER actual va en color de acento y las tres referencias en tono
+    neutro: la pregunta es dónde cae el actual respecto a las otras tres,
+    no comparar las tres entre sí.
     """
-    periodos = series.get("periodos") or []
-    if not periodos:
-        st.markdown(f'<div class="ss-nd">{TEXTO_ND}</div>', unsafe_allow_html=True)
-        return
+    etiquetas, valores, colores = [], [], []
+    for clave, etiqueta, color in (
+        ("actual", "PER actual", C_PRIMARIO),
+        ("forward", "PER forward", C_TEAL),
+        ("historico", "PER medio propio 5a", C_AZUL),
+        ("sector", "PER medio del sector", C_TEXTO_TENUE),
+    ):
+        etiquetas.append(etiqueta)
+        valores.append(pers.get(clave))
+        colores.append(color)
 
-    simbolo = " $" if (moneda or "").upper() == "USD" else (f" {moneda}" if moneda else "")
-    _barras_horizontales(periodos, series.get("bpa"), "BPA diluido", lambda v: fmt_num(v))
     _barras_horizontales(
-        periodos, series.get("ingresos"), "Ingresos", lambda v: fmt_compacto(v, simbolo)
+        etiquetas,
+        valores,
+        "Comparativa de PER",
+        lambda v: fmt_num(v, 1, "x"),
+        alto=GRAFICO_PER_ALTO,
+        colores=colores,
     )
-    _barras_horizontales(
-        periodos, series.get("margen_neto"), "Margen neto", lambda v: fmt_num(v, 1, " %")
-    )
-    _barras_horizontales(
-        periodos, series.get("fcf"), "Flujo de caja libre", lambda v: fmt_compacto(v, simbolo)
-    )
+    if mensaje:
+        st.markdown(
+            f'<div class="ss-per-mensaje">{html.escape(mensaje)}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def alerta(texto: str, color: str) -> None:
