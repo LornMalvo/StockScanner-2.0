@@ -13,7 +13,6 @@ from config.settings import (
     C_VERDE,
     CARTERA_DIVISAS_CONVERTIBLES,
     CONSENSO_ANALISTAS_ES,
-    CONSENSO_MIN_ANALISTAS,
     CURRENT_RATIO_MEDIANO_SECTOR,
     C_AMBAR,
     C_VERDE_OSCURO,
@@ -35,7 +34,6 @@ from config.settings import (
     ROE_MEDIANO_SECTOR,
     ROIC_MEDIANO_SECTOR,
     TEXTO_ND,
-    TRIMESTRES_EVOLUCION,
 )
 from core import alertas_telegram, bd_supabase, datos_api, indicadores, plan_dca, timing, traduccion, valoracion
 from ui import componentes as C
@@ -279,11 +277,11 @@ def _bloque_2_descripcion(a: dict) -> None:
         texto += f"  (en {dias} días)"
     C.metrica("Próxima presentación de resultados", texto)
 
-    st.markdown("**Racha de sorpresas de resultados**")
+    st.markdown("**Histórico de resultados:**")
     C.racha_sorpresas(valoracion.racha_sorpresas(p.get("earnings", {}).get("historial") or []))
 
-    st.markdown(f"**Evolución de los últimos {TRIMESTRES_EVOLUCION} trimestres**")
-    C.evolucion_trimestral(valoracion.series_trimestrales(p), p.get("moneda"))
+    pers = valoracion.comparativa_per(p)
+    C.comparativa_per(pers, valoracion.interpretacion_per(pers))
 
 
 def _linea_sorpresa(concepto: str, real, estimado) -> None:
@@ -604,13 +602,6 @@ def _bloque_4_calidad(a: dict) -> None:
     C.alerta(alerta.get("etiqueta", TEXTO_ND), alerta.get("color", "#94a3b8"))
     C.metrica("Precio actual de cotización", _precio_fmt(p.get("precio"), p))
     C.metrica("Potencial (upside)", fmt_pct(v.get("upside_pct")))
-    if v.get("peso_consenso_doble"):
-        n = p.get("consenso", {}).get("n_analistas")
-        cobertura = f" ({n:.0f})" if es_valido(n) else ""
-        st.caption(
-            f"Peso doble aplicado al consenso: cobertura ≥ {CONSENSO_MIN_ANALISTAS} "
-            f"analistas{cobertura}."
-        )
 
     with st.expander("Desglose de la valoración"):
         for nombre, comp in v["componentes"].items():
@@ -795,11 +786,12 @@ def _bloque_4_calidad(a: dict) -> None:
 
 
 def _clave_peso(nombre: str) -> str:
+    """Nombre visible del método -> clave de `PESOS_FAIR_VALUE`."""
     return {
-        "DCF": "dcf",
-        "Múltiplos": "multiplos",
-        "EV/EBITDA sectorial": "ev_ebitda",
+        "PER histórico propio × BPA TTM": "per_ttm",
+        "PER razonable × BPA forward": "per_forward",
         "Valoración PEG": "peg",
+        "EV/EBITDA sectorial": "ev_ebitda",
         "Consenso analistas": "consenso",
     }.get(nombre, nombre.lower())
 
