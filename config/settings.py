@@ -48,14 +48,16 @@ PLAN_COLOR_STOP = C_ROJO
 GRAFICO_ALTO = 560
 GRAFICO_PROPORCION_FILAS = (0.75, 0.25)  # precio / MACD
 
-# ------------------------------------- evolución trimestral (Bloque 2) ----
-# Nº de trimestres que muestran los gráficos de BPA / ingresos / margen neto
-# / FCF. Cuatro cubre un año completo, el mínimo para que el efecto
-# estacional del propio negocio no distorsione la lectura.
+# -------------------------------------------- histórico de resultados ----
+# Nº de trimestres del histórico de resultados (racha de sorpresas de BPA).
+# Cuatro cubre un año completo, el mínimo para que el efecto estacional del
+# propio negocio no distorsione la lectura.
 TRIMESTRES_EVOLUCION = 4
-# Alto de cada minigráfico de barras horizontales. Deliberadamente pequeño:
-# son gráficos de contexto en una columna estrecha, no protagonistas.
+# Alto de los minigráficos de barras horizontales del Bloque 2.
+# Deliberadamente pequeños: son gráficos de contexto en una columna
+# estrecha, no protagonistas.
 GRAFICO_BARRAS_ALTO = 130
+GRAFICO_PER_ALTO = 150
 
 # ------------------------------------------------------------ navegación ----
 SECCIONES = [
@@ -92,31 +94,47 @@ BANDAS_VALORACION = [
 ]
 
 # ------------------------------------------------- pesos de valoración FV ----
-# Recalibrado tras simulación sobre cesta de 29 tickers multisector (ver
-# ESTADO_PROYECTO.md). El DCF baja de 0,25 a 0,10: en la calibración fue,
-# con diferencia, el método más alejado del consenso de analistas (mediana
-# de desviación ~50-60% frente a ~25-35% de multiplos/ev_ebitda/peg), y su
-# desviación media no mejoró pese a corregir la metodología (FCFF, WACC
-# ponderado real, deuda contada una sola vez) — el problema no es un bug de
-# cálculo sino la naturaleza del método: cualquier tasa de descuento
-# defendible topa el múltiplo de salida muy por debajo de lo que paga hoy
-# el mercado en sectores de alto crecimiento (ver nota en valorar_dcf).
-# No se retira del todo porque en varios tickers (los de FCF estable y
-# deuda normal) seguía siendo la lectura más precisa de los cuatro. El resto
-# de pesos se reescala proporcionalmente para seguir sumando 1,0.
+# Motor de valor objetivo: cuatro métodos de una sola multiplicación (cero
+# DCF) más el consenso de analistas con peso FIJO.
+#
+# Dos cambios estructurales respecto al motor anterior:
+#
+# 1) Fuera el DCF. En la calibración sobre 29 tickers multisector fue, con
+#    diferencia, el método más alejado del consenso (mediana de desviación
+#    ~50-60% frente a ~25-35% del resto), y no mejoró al corregir su
+#    metodología (FCFF, WACC ponderado real, deuda contada una sola vez):
+#    el problema no era un bug sino la naturaleza del método, que topa el
+#    múltiplo de salida muy por debajo de lo que paga el mercado en
+#    sectores de crecimiento. `valorar_dcf()` sigue en el módulo pero ya no
+#    lo llama nadie (ver ESTADO_PROYECTO.md).
+#
+# 2) Peso FIJO del consenso, sin duplicación. Antes el consenso podía
+#    llegar al 68% del peso efectivo (0,34 x2 con >=10 analistas) siendo a
+#    la vez el ancla de la banda de cordura: se vigilaba a sí mismo. Ahora
+#    pesa un 20% constante y el ancla es mixta (mediana de los 4 métodos
+#    propios junto al consenso), rompiendo la circularidad.
 PESOS_FAIR_VALUE = {
-    "dcf": 0.10,
-    "multiplos": 0.17,
-    "ev_ebitda": 0.22,
-    "peg": 0.17,
-    "consenso": 0.34,
+    "per_ttm": 0.20,      # A. PER histórico propio x BPA TTM
+    "per_forward": 0.25,  # B. PER razonable x BPA forward
+    "peg": 0.20,          # C. PEG (reutilizado sin cambios)
+    "ev_ebitda": 0.15,    # D. EV/EBITDA por industria (reutilizado sin cambios)
+    "consenso": 0.20,     # Precio objetivo medio de analistas
 }
-# El consenso duplica peso si lo cubren >= 10 analistas. Se retiró el
-# requisito adicional de unanimidad (100% de recomendaciones de compra):
-# con cobertura amplia (ej. AVGO, 45 analistas) la probabilidad de
-# unanimidad total es casi nula, así que esa condición dejaba el peso
-# doble inactivo en la práctica incluso en los valores mejor cubiertos.
-CONSENSO_MIN_ANALISTAS = 10
+
+# Filtro de estabilidad del PER histórico propio (método B). Si el ejercicio
+# más caro de la serie de 5 años supera al más barato en más de este factor,
+# la empresa no tiene un "PER propio" fiable -- tiene una serie inestable
+# (rampa de crecimiento, o un cargo puntual que casi anula el BPA de un
+# ejercicio) -- y el método cae al PER forward mediano del sector. Calibrado
+# en 2,0x: NBIX pasaba el filtro con un PER histórico que sobrestimaba el
+# valor un +221%, y con este umbral cae correctamente al sectorial.
+UMBRAL_ESTABILIDAD_PER_HISTORICO = 2.0
+
+# Cuánto tiene que desviarse el PER actual de una referencia (sector o
+# histórico propio) para llamarlo "caro" o "barato" en vez de "en línea".
+# 1,15 = 15% de margen a cada lado: por debajo de esa diferencia el ruido
+# de las medianas sectoriales heurísticas no permite afirmar nada.
+UMBRAL_PER_CARA_BARATA = 1.15
 
 # ------------------------------------------------------ parámetros de DCF ----
 DCF_ANIOS = 5
@@ -573,17 +591,13 @@ PER_MEDIANO_SECTOR = {
     "Real Estate": 30.0,
 }
 
-# El PER histórico propio no puede superar este múltiplo del PER sectorial
-# de referencia. Antes el filtro era absoluto (0 < PER < 60), lo que dejaba
-# pasar valores como un PER histórico de 44,1x en un sector con mediana
-# ~24x. Relativo al sector, el techo se ajusta automáticamente a cada
-# industria en vez de usar el mismo límite duro para todas.
+# HUÉRFANAS A PROPÓSITO: las dos constantes de abajo alimentaban a
+# `valorar_multiplos()`, que mezclaba PER sectorial e histórico en una media
+# ponderada y fue sustituida por los métodos A y B del motor nuevo (que los
+# usan por separado: el histórico tal cual en A, y en B con un filtro de
+# ESTABILIDAD -- `UMBRAL_ESTABILIDAD_PER_HISTORICO` -- en vez de un techo
+# relativo). Se conservan documentadas por si se reevalúa ese enfoque.
 PER_HIST_TECHO_VS_SECTOR = 1.3
-
-# Peso del PER sectorial frente al histórico propio al combinarlos (el
-# resto, 1 - este valor, va al histórico). El histórico es el que arrastra
-# outliers de ejercicios puntuales; ponderar más el sectorial reduce esa
-# distorsión sin descartar la referencia propia.
 PESO_PER_SECTOR = 0.60
 MARGEN_NETO_MEDIANO_SECTOR = {
     "Technology": 0.18,
@@ -705,6 +719,126 @@ EV_EBITDA_MEDIANO_INDUSTRIA = {
     "Specialty Chemicals": 14.0,
     "Steel": 7.0,
     "Utilities - Regulated Electric": 12.0,
+    # --- Ampliación a cobertura completa (dataset Damodaran, enero 2026) ---
+    # Las 40 entradas de arriba son las originales, calibradas contra
+    # consenso sobre la cesta de 29 tickers, y NO se han tocado. Las de
+    # abajo cubren las 99 industrias restantes de la taxonomía de yfinance
+    # mapeando las 91 categorías de Damodaran (más gruesas que las 145 de
+    # Yahoo/GICS, así que varias son la categoría más cercana, no un match
+    # 1:1). Con esto la tabla cubre las 145 industrias reales: 139 con
+    # múltiplo propio y 6 excluidas por decisión de diseño (ver abajo).
+    #
+    # Nota sobre el separador: yfinance expone las industrias con raya larga
+    # en su constante interna `SECTOR_INDUSTY_MAPPING`, pero el campo que
+    # consume la app -- `info["industry"]` -- las devuelve con guion y
+    # espacios ("REIT - Retail"). Las claves siguen ESA forma, verificada
+    # contra datos reales; escribirlas con raya larga las dejaría muertas.
+    "Lumber & Wood Production": 8.2,
+    "Other Precious Metals & Mining": 10.7,
+    "Copper": 11.4,
+    "Other Industrial Metals & Mining": 11.4,
+    "Chemicals": 8.4,
+    "Paper & Paper Products": 8.2,
+    "Silver": 10.7,
+    "Aluminum": 11.4,
+    "Building Materials": 11.6,
+    "Agricultural Inputs": 8.6,
+    "Gold": 10.7,
+    "Coking Coal": 10.4,
+    "Broadcasting": 7.8,
+    "Advertising Agencies": 12.0,
+    "Electronic Gaming & Multimedia": 22.0,
+    "Publishing": 11.2,
+    "Footwear & Accessories": 16.9,
+    "Residential Construction": 8.9,
+    "Furnishings, Fixtures & Appliances": 11.3,
+    "Restaurants": 17.5,
+    "Recreational Vehicles": 10.4,
+    "Auto & Truck Dealerships": 14.8,
+    "Resorts & Casinos": 14.9,
+    "Lodging": 14.9,
+    "Textile Manufacturing": 10.3,
+    "Specialty Retail": 11.5,
+    "Travel Services": 10.4,
+    "Gambling": 14.9,
+    "Personal Services": 14.3,
+    "Packaging & Containers": 9.7,
+    "Leisure": 10.4,
+    "Auto Parts": 6.4,
+    "Apparel Manufacturing": 10.3,
+    "Apparel Retail": 11.5,
+    "Luxury Goods": 11.5,
+    "Department Stores": 17.4,
+    "Confectioners": 10.0,
+    "Beverages - Wineries & Distilleries": 8.6,
+    "Food Distribution": 11.1,
+    "Education & Training Services": 9.3,
+    "Tobacco": 13.5,
+    "Packaged Foods": 10.0,
+    "Farm Products": 16.0,
+    "Grocery Stores": 8.9,
+    "Beverages - Brewers": 8.6,
+    "Oil & Gas Midstream": 11.6,
+    "Thermal Coal": 10.4,
+    "Uranium": 11.4,
+    "Oil & Gas Drilling": 8.6,
+    "Oil & Gas E&P": 5.2,
+    "Oil & Gas Refining & Marketing": 8.2,
+    "Banks - Regional": 11.0,
+    "Insurance - Property & Casualty": 8.4,
+    "Insurance - Life": 12.5,
+    "Insurance - Specialty": 15.8,
+    # Damodaran da 38x para "Investments & Asset Mgmt", un múltiplo que
+    # refleja gestoras de alto crecimiento y no una gestora tradicional.
+    # Se deja porque el sector no tiene mejor referencia, pero es el valor
+    # menos fiable de la tabla.
+    "Asset Management": 38.0,
+    "Insurance Brokers": 15.8,
+    "Insurance - Reinsurance": 8.7,
+    "Financial Data & Stock Exchanges": 11.5,
+    "Insurance - Diversified": 15.8,
+    "Medical Care Facilities": 8.9,
+    "Pharmaceutical Retailers": 11.2,
+    "Health Information Services": 21.3,
+    "Airports & Air Services": 7.6,
+    "Airlines": 7.6,
+    "Rental & Leasing Services": 14.3,
+    "Specialty Industrial Machinery": 16.2,
+    "Conglomerates": 11.4,
+    "Staffing & Employment Services": 14.3,
+    "Metal Fabrication": 11.6,
+    "Integrated Freight & Logistics": 12.6,
+    "Consulting Services": 14.3,
+    "Trucking": 10.4,
+    "Business Equipment & Supplies": 8.6,
+    "Electrical Equipment & Parts": 24.6,
+    "Industrial Distribution": 13.7,
+    "Pollution & Treatment Controls": 15.6,
+    "Building Products & Equipment": 16.8,
+    "Tools & Accessories": 16.2,
+    "Specialty Business Services": 14.3,
+    "Engineering & Construction": 17.2,
+    "Waste Management": 15.6,
+    "Security & Protection Services": 14.3,
+    "Marine Shipping": 8.0,
+    "Infrastructure Operations": 12.6,
+    "REIT - Hotel & Motel": 19.9,
+    "REIT - Diversified": 19.9,
+    "Real Estate - Development": 10.2,
+    "Real Estate - Diversified": 17.3,
+    "Real Estate Services": 21.9,
+    "Electronics & Computer Distribution": 13.7,
+    "Communication Equipment": 24.1,
+    "Scientific & Technical Instruments": 20.0,
+    "Electronic Components": 20.0,
+    # Solar por fin con entrada propia: antes caía al 18x genérico de
+    # Technology, que es justo lo que sobrevaloraba a FSLR.
+    "Solar": 13.4,
+    "Utilities - Regulated Water": 14.1,
+    "Utilities - Renewable": 13.4,
+    "Utilities - Diversified": 13.7,
+    "Utilities - Regulated Gas": 13.7,
+    "Utilities - Independent Power Producers": 12.4,
 }
 
 # Industrias donde EV/EBITDA se EXCLUYE directamente (no se usa ni siquiera
@@ -713,7 +847,21 @@ EV_EBITDA_MEDIANO_INDUSTRIA = {
 # múltiplo, es que el EBITDA de una biotech en rampa comercial (o aún sin
 # ingresos de producto) no es una magnitud estable a la que aplicar un
 # múltiplo sectorial.
-EV_EBITDA_INDUSTRIAS_EXCLUIDAS = {"Biotechnology"}
+# Se amplía con 5 industrias del sector Financial Services por la MISMA
+# razón por la que DCF_SECTORES_APALANCADOS ya trata aparte a ese sector: su
+# negocio ES apalancarse, así que no generan un EBITDA operativo comparable
+# al de una empresa industrial. Rellenarlas con un múltiplo aparentaría el
+# mismo rigor que el resto de la tabla sin tenerlo -- es preferible que el
+# método se excluya y `ponderar()` redistribuya su peso, que es exactamente
+# para lo que existe.
+EV_EBITDA_INDUSTRIAS_EXCLUIDAS = {
+    "Biotechnology",
+    "Shell Companies",
+    "Mortgage Finance",
+    "Financial Conglomerates",
+    "Capital Markets",
+    "REIT - Mortgage",
+}
 PS_MEDIANO_SECTOR = {
     "Technology": 6.0,
     "Communication Services": 3.0,
