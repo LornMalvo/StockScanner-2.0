@@ -17,7 +17,6 @@ from config.settings import (
     BANDA_TECHO,
     BANDAS_VALORACION,
     BLOQUES_CALIDAD,
-    CONSENSO_MIN_ANALISTAS,
     DCF_ANIOS,
     DCF_ANOMALIA_FCF,
     DCF_CRECIMIENTO_MAX,
@@ -48,13 +47,13 @@ from config.settings import (
     PEG_CRECIMIENTO_MAX,
     PEG_CRECIMIENTO_MIN,
     PEG_OBJETIVO,
-    PER_HIST_TECHO_VS_SECTOR,
     PER_MEDIANO_SECTOR,
-    PESO_PER_SECTOR,
     PESOS_CALIDAD,
     PESOS_FAIR_VALUE,
     ROE_MEDIANO_SECTOR,
     TRIMESTRES_EVOLUCION,
+    UMBRAL_ESTABILIDAD_PER_HISTORICO,
+    UMBRAL_PER_CARA_BARATA,
 )
 from utils.formato import es_valido, escalar, num, ponderar, primero_valido
 
@@ -145,6 +144,14 @@ def _base_fcf_normalizada(fcf_serie: pd.Series | None, info: dict, estados: dict
 
 def valorar_dcf(paquete: dict) -> tuple[float | None, dict]:
     """DCF con FCFF (flujo desapalancado) y WACC ponderado real.
+
+    HUÉRFANA A PROPÓSITO: desde el motor de valor objetivo de cuatro métodos
+    esta función ya NO se llama desde `calcular_fair_value()`. Se conserva
+    (junto con sus constantes `DCF_*` en settings) porque está calibrada y
+    documentada, y porque la decisión de retirar el DCF se basó en su
+    desviación frente al consenso, no en un error de implementación: si el
+    criterio cambia, volver a enchufarla es añadir una línea. Ver
+    ESTADO_PROYECTO.md.
 
     Metodología revisada tras detectar dos errores en la versión anterior:
 
@@ -339,86 +346,6 @@ def valorar_dcf(paquete: dict) -> tuple[float | None, dict]:
     return (por_accion if por_accion > 0 else None), detalle
 
 
-def valorar_multiplos(paquete: dict) -> tuple[float | None, dict]:
-    """PER justo = media ponderada entre PER sectorial y PER histórico propio.
-
-    Dos correcciones sobre la versión anterior:
-
-    1) Coherencia forward/trailing. El BPA usado es forward cuando existe,
-       pero se comparaba contra `PER_MEDIANO_SECTOR`, una tabla TRAILING —
-       mezclar un BPA futuro con un múltiplo pasado infla el método de
-       forma sistemática. Ahora, con BPA forward se usa
-       `FORWARD_PER_MEDIANO_SECTOR` y el PER histórico (que es trailing por
-       construcción) se reescala por la relación forward/trailing del
-       sector para que ambos términos hablen el mismo idioma.
-
-    2) Techo relativo en vez de absoluto. El filtro anterior descartaba
-       solo PER > 60, dejando pasar valores como un PER histórico de 44,1x
-       (mediana real de 5 años) en un sector cuya referencia forward es
-       ~24x. Ahora el histórico no puede superar PER_HIST_TECHO_VS_SECTOR
-       veces el sectorial.
-    """
-    detalle = {"metodo": "Múltiplos", "notas": []}
-    info = paquete.get("info", {})
-    sector = paquete.get("sector")
-
-    bpa_forward = primero_valido(info.get("forwardEps"))
-    es_forward = es_valido(bpa_forward) and bpa_forward > 0
-    bpa = bpa_forward if es_forward else primero_valido(info.get("trailingEps"))
-    if not es_valido(bpa) or bpa <= 0:
-        detalle["notas"].append("BPA no disponible o negativo")
-        return None, detalle
-
-    tabla_sector = FORWARD_PER_MEDIANO_SECTOR if es_forward else PER_MEDIANO_SECTOR
-    per_sector = tabla_sector.get(sector)
-    per_historico = calcular_per_historico(paquete)
-
-    recortado = False
-    if es_valido(per_historico) and es_forward:
-        per_trailing_sector = PER_MEDIANO_SECTOR.get(sector)
-        per_forward_sector = FORWARD_PER_MEDIANO_SECTOR.get(sector)
-        if es_valido(per_trailing_sector) and es_valido(per_forward_sector) and per_trailing_sector > 0:
-            per_historico = per_historico * (per_forward_sector / per_trailing_sector)
-
-    if es_valido(per_historico) and es_valido(per_sector):
-        techo = per_sector * PER_HIST_TECHO_VS_SECTOR
-        if per_historico > techo:
-            per_historico, recortado = techo, True
-
-    if es_valido(per_sector) and es_valido(per_historico):
-        per_justo = PESO_PER_SECTOR * per_sector + (1 - PESO_PER_SECTOR) * per_historico
-    elif es_valido(per_sector) or es_valido(per_historico):
-        per_justo = per_sector if es_valido(per_sector) else per_historico
-    else:
-        detalle["notas"].append("Sin referencia de PER sectorial ni histórica")
-        return None, detalle
-
-    partes = []
-    if es_valido(per_sector):
-        partes.append(f"PER sector {'forward' if es_forward else 'trailing'} {per_sector:.1f}×")
-    if es_valido(per_historico):
-        partes.append(
-            f"PER histórico propio 5a (mediana){' [recortado al techo sectorial]' if recortado else ''} "
-            f"{per_historico:.1f}×"
-        )
-    bpa_origen = "Forward" if es_forward else "TTM"
-    detalle.update(
-        {
-            "bpa": bpa,
-            "per_sector": per_sector,
-            "per_historico_5a": per_historico,
-            "per_recortado": recortado,
-            "per_justo": per_justo,
-            "valor_accion": per_justo * bpa,
-            "formula": (
-                f"PER justo = {PESO_PER_SECTOR * 100:.0f}% sector + {(1 - PESO_PER_SECTOR) * 100:.0f}% "
-                f"histórico [ {' ; '.join(partes)} ] = {per_justo:.1f}× "
-                f"× BPA {bpa_origen} {bpa:,.2f} \\$ → {per_justo * bpa:,.2f} \\$"
-            ),
-        }
-    )
-    return per_justo * bpa, detalle
-
 
 def valorar_peg(paquete: dict) -> tuple[float | None, dict]:
     """Valoración por PEG con estimaciones reales de analistas a 1 año.
@@ -555,14 +482,21 @@ def valorar_ev_ebitda(paquete: dict) -> tuple[float | None, dict]:
     return (por_accion if por_accion > 0 else None), detalle
 
 
-def calcular_per_historico(paquete: dict, anios: int = 5) -> float | None:
-    """PER medio de los últimos 5 años: precio medio anual / BPA de cada ejercicio."""
+def _serie_per_historico(paquete: dict, anios: int = 5) -> list[float]:
+    """PER de cada uno de los últimos `anios` ejercicios (precio medio anual
+    / BPA del ejercicio), año a año.
+
+    Se extrae como función propia para que la mediana pública
+    (`calcular_per_historico`, usada por el método A del motor de valor
+    objetivo) y el filtro de estabilidad del método B compartan exactamente
+    el mismo cálculo -- no dos implementaciones que podrían desincronizarse.
+    """
     estados = paquete.get("estados", {})
     historico = paquete.get("historico")
     beneficio = fila(estados.get("resultados"), "Net Income", "Net Income Common Stockholders")
     acciones = primero_valido(paquete.get("info", {}).get("sharesOutstanding"))
     if beneficio is None or historico is None or historico.empty or not es_valido(acciones):
-        return None
+        return []
 
     pers: list[float] = []
     for fecha in list(beneficio.index)[:anios]:
@@ -577,91 +511,128 @@ def calcular_per_historico(paquete: dict, anios: int = 5) -> float | None:
         if ventana.empty or not es_valido(bpa) or bpa <= 0:
             continue
         pers.append(float(ventana["Close"].mean()) / (bpa / acciones))
-    # Mediana en vez de media: un solo año con BPA distorsionado (cargos
-    # puntuales, amortización de intangibles por una adquisición, etc.)
-    # infla la media pero apenas mueve la mediana.
-    validos = [p for p in pers if 0 < p < 100]
+    return [p for p in pers if 0 < p < 100]
+
+
+def calcular_per_historico(paquete: dict, anios: int = 5) -> float | None:
+    """PER medio de los últimos 5 años: precio medio anual / BPA de cada ejercicio.
+
+    Mediana en vez de media: un solo año con BPA distorsionado (cargos
+    puntuales, amortización de intangibles por una adquisición, etc.) infla
+    la media pero apenas mueve la mediana.
+    """
+    validos = _serie_per_historico(paquete, anios)
     return statistics.median(validos) if validos else None
 
 
-def _serie_trimestral(df: pd.DataFrame | None, periodos: list, *etiquetas: str) -> list:
-    """Valores de una partida para una lista concreta de columnas (periodos).
+def _per_historico_es_estable(paquete: dict, anios: int = 5) -> bool:
+    """Si el PER histórico propio es lo bastante consistente para usarse tal
+    cual en el método B del motor de valor objetivo, o si conviene caer al
+    PER del sector.
 
-    El eje de periodos se pasa desde fuera para que las cuatro series (BPA,
-    ingresos, margen, FCF) queden ALINEADAS trimestre a trimestre aunque a
-    una le falte un dato: si falta, va `None` y el gráfico deja el hueco en
-    su sitio, en vez de desplazar la serie un trimestre y comparar peras con
-    manzanas.
+    Dos condiciones: (1) al menos 3 ejercicios válidos -- con menos, la
+    mediana es poco más que un dato suelto -- y (2) que el ejercicio más
+    caro no supere en más de `UMBRAL_ESTABILIDAD_PER_HISTORICO` veces al más
+    barato. Una empresa que cotizó a 15x un año y a 60x otro (rampa de
+    crecimiento, o un cargo puntual que casi anula el BPA de un ejercicio)
+    no tiene un "PER propio" fiable: tiene una serie inestable que hay que
+    sustituir por la referencia del sector en vez de tomarla al pie de la
+    letra.
     """
-    serie = fila(df, *etiquetas)
-    if serie is None:
-        return [None] * len(periodos)
-    return [num(serie.loc[p]) if p in serie.index else None for p in periodos]
+    serie = _serie_per_historico(paquete, anios)
+    if len(serie) < 3:
+        return False
+    return (max(serie) / min(serie)) <= UMBRAL_ESTABILIDAD_PER_HISTORICO
 
 
-def _etiqueta_trimestre(periodo) -> str:
-    """'2026-06-30' -> '2T26'. Si no se puede interpretar, se deja tal cual."""
-    try:
-        ts = pd.Timestamp(periodo)
-    except Exception:
-        return str(periodo)[:10]
-    return f"{(ts.month - 1) // 3 + 1}T{ts.year % 100:02d}"
+def valorar_per_ttm_propio(paquete: dict) -> tuple[float | None, dict]:
+    """Método A del motor de valor objetivo: PER histórico propio (mediana
+    de los últimos 5 años) x BPA TTM (trailing).
 
-
-def series_trimestrales(paquete: dict, trimestres: int = TRIMESTRES_EVOLUCION) -> dict:
-    """BPA, ingresos, margen neto y FCF de los últimos N trimestres cerrados.
-
-    Devuelve las cuatro series ya alineadas sobre el mismo eje de periodos
-    (del más antiguo al más reciente, que es como se lee una evolución) para
-    que la interfaz solo tenga que pintarlas.
-
-    El eje de periodos lo marca la cuenta de resultados trimestral (trae tres
-    de las cuatro magnitudes); el flujo de caja trimestral se reindexa contra
-    ella.
+    El más simple de los cuatro: una sola multiplicación, sin más filtro que
+    los que ya trae `calcular_per_historico()`. Representa "lo que el
+    mercado ha pagado habitualmente por esta empresa concreta", aplicado a
+    su beneficio ya conocido -- sin apostar por si el histórico es fiable o
+    no, que es precisamente lo que sí hace el método B.
     """
-    estados = paquete.get("estados", {})
-    resultados = estados.get("resultados_trim")
-    flujo = estados.get("flujo_caja_trim")
-    vacio = {"periodos": [], "bpa": [], "ingresos": [], "margen_neto": [], "fcf": []}
-    if resultados is None or getattr(resultados, "empty", True):
-        return vacio
+    detalle = {"metodo": "PER histórico propio × BPA TTM", "notas": []}
+    per_historico = calcular_per_historico(paquete)
+    bpa_ttm = primero_valido(paquete.get("info", {}).get("trailingEps"))
 
-    # Columnas ordenadas de más reciente a más antigua: se cogen las N
-    # primeras y se invierte, para que el gráfico se lea en orden cronológico.
-    periodos = list(resultados.columns)[:trimestres][::-1]
-    if not periodos:
-        return vacio
-
-    ingresos = _serie_trimestral(resultados, periodos, "Total Revenue", "Operating Revenue")
-    beneficio = _serie_trimestral(
-        resultados, periodos, "Net Income", "Net Income Common Stockholders"
-    )
-    bpa = _serie_trimestral(resultados, periodos, "Diluted EPS", "Basic EPS")
-    fcf = _serie_trimestral(flujo, periodos, "Free Cash Flow")
-
-    # Respaldo si la fila "Free Cash Flow" no viene: caja operativa menos
-    # capex (que en Yahoo llega en negativo, de ahí la suma).
-    if not any(es_valido(x) for x in fcf):
-        ocf = _serie_trimestral(
-            flujo, periodos, "Operating Cash Flow", "Total Cash From Operating Activities"
+    if not es_valido(per_historico):
+        detalle["notas"].append(
+            "PER histórico propio no calculable (BPA negativo en los ejercicios "
+            "disponibles o sin suficiente serie de precios)"
         )
-        capex = _serie_trimestral(flujo, periodos, "Capital Expenditure")
-        fcf = [
-            (o + c) if es_valido(o) and es_valido(c) else None for o, c in zip(ocf, capex)
-        ]
+        return None, detalle
+    if not es_valido(bpa_ttm) or bpa_ttm <= 0:
+        detalle["notas"].append("BPA TTM (trailing) no disponible o negativo")
+        return None, detalle
 
-    margen = [
-        (b / i * 100) if es_valido(b) and es_valido(i) and i else None
-        for b, i in zip(beneficio, ingresos)
-    ]
+    valor = per_historico * bpa_ttm
+    detalle.update(
+        per_historico_5a=per_historico,
+        bpa_ttm=bpa_ttm,
+        valor_accion=valor,
+        formula=(
+            f"PER histórico propio (mediana 5a) {per_historico:.1f}× × BPA TTM "
+            f"{bpa_ttm:,.2f} \\$ = {valor:,.2f} \\$"
+        ),
+    )
+    return valor, detalle
 
-    return {
-        "periodos": [_etiqueta_trimestre(p) for p in periodos],
-        "bpa": bpa,
-        "ingresos": ingresos,
-        "margen_neto": margen,
-        "fcf": fcf,
-    }
+
+def valorar_per_razonable_forward(paquete: dict) -> tuple[float | None, dict]:
+    """Método B del motor de valor objetivo: PER razonable x BPA forward
+    (consenso de analistas a 1 año).
+
+    El PER histórico propio SOLO se usa si pasa `_per_historico_es_estable()`;
+    si no, se cae al PER medio del sector -- en base FORWARD
+    (`FORWARD_PER_MEDIANO_SECTOR`), nunca a la tabla trailing, para no
+    mezclar un BPA futuro con un múltiplo del pasado (el mismo error, ya
+    identificado y evitado aquí desde el principio, que tenía la antigua
+    `valorar_multiplos`).
+    """
+    detalle = {"metodo": "PER razonable × BPA forward", "notas": []}
+    info = paquete.get("info", {})
+    sector = paquete.get("sector")
+
+    bpa_forward = primero_valido(info.get("forwardEps"))
+    if not es_valido(bpa_forward) or bpa_forward <= 0:
+        detalle["notas"].append("BPA forward (consenso de analistas) no disponible o negativo")
+        return None, detalle
+
+    estable = _per_historico_es_estable(paquete)
+    per_historico = calcular_per_historico(paquete) if estable else None
+
+    if estable and es_valido(per_historico):
+        per_usado = per_historico
+        origen = "histórico propio (pasa el filtro de estabilidad)"
+    else:
+        per_usado = FORWARD_PER_MEDIANO_SECTOR.get(sector)
+        origen = (
+            "mediano del sector, base forward (histórico inestable o insuficiente)"
+            if not estable
+            else "mediano del sector, base forward (sin PER histórico calculable)"
+        )
+        if not es_valido(per_usado):
+            detalle["notas"].append(
+                f"PER histórico inestable y sin PER forward de referencia para el sector «{sector}»"
+            )
+            return None, detalle
+
+    valor = per_usado * bpa_forward
+    detalle.update(
+        per_usado=per_usado,
+        origen_per=origen,
+        bpa_forward=bpa_forward,
+        valor_accion=valor,
+        formula=(
+            f"PER {origen} {per_usado:.1f}× × BPA forward {bpa_forward:,.2f} \\$ = {valor:,.2f} \\$"
+        ),
+    )
+    return valor, detalle
+
 
 
 def racha_sorpresas(historial: list, trimestres: int = TRIMESTRES_EVOLUCION) -> dict:
@@ -700,26 +671,70 @@ def racha_sorpresas(historial: list, trimestres: int = TRIMESTRES_EVOLUCION) -> 
     }
 
 
-def _consenso_ponderable(consenso: dict) -> tuple[float | None, float]:
-    """Devuelve (precio objetivo, multiplicador de peso 1 o 2).
+def comparativa_per(paquete: dict) -> dict:
+    """Los cuatro PER que la app ya calcula o consume, reunidos para
+    compararlos de un vistazo: actual (trailing), forward, histórico propio
+    (mediana 5 años) y mediano del sector (base trailing, la referencia
+    "de siempre" con la que se suele comparar un PER actual).
 
-    Peso doble si lo cubren >= CONSENSO_MIN_ANALISTAS analistas. Ya no se
-    exige además unanimidad del 100%: con cobertura amplia esa condición
-    casi nunca se cumplía (basta un solo "mantener" entre 45 analistas para
-    desactivarla), dejando el peso doble inerte en la práctica incluso en
-    los valores mejor cubiertos.
+    Ninguno es un dato nuevo: `trailingPE`/`forwardPE` vienen de `info`, el
+    histórico propio ya lo calcula `calcular_per_historico()` (usado por el
+    método A del motor de valor objetivo) y la mediana sectorial es
+    `PER_MEDIANO_SECTOR`. Aquí solo se agrupan para la lectura visual.
     """
-    objetivo = consenso.get("precio_objetivo")
-    if not es_valido(objetivo):
-        return None, 1.0
-    n = consenso.get("n_analistas")
-    doble = es_valido(n) and float(n) >= CONSENSO_MIN_ANALISTAS
-    return float(objetivo), (2.0 if doble else 1.0)
+    info = paquete.get("info", {})
+    return {
+        "actual": primero_valido(info.get("trailingPE")),
+        "forward": primero_valido(info.get("forwardPE")),
+        "historico": calcular_per_historico(paquete),
+        "sector": PER_MEDIANO_SECTOR.get(paquete.get("sector")),
+    }
+
+
+def interpretacion_per(pers: dict) -> str | None:
+    """Traduce la comparativa de PER a un mensaje de una línea: cara/barata
+    frente al sector y cara/barata frente a su propia historia.
+
+    Se compara el PER ACTUAL (trailing) contra el sector y contra el
+    histórico propio -- son las dos preguntas distintas que responde el
+    gráfico ("¿cara para lo que paga el mercado por este tipo de negocio?" y
+    "¿cara para lo que ha cotizado ella misma?"), y pueden dar respuestas
+    distintas sin contradecirse: una empresa puede cotizar barata frente a
+    su sector y cara frente a su propia historia a la vez.
+    """
+    actual = pers.get("actual")
+    sector = pers.get("sector")
+    historico = pers.get("historico")
+    if not es_valido(actual):
+        return None
+
+    partes = []
+    if es_valido(sector) and sector > 0:
+        ratio = actual / sector
+        if ratio <= 1 / UMBRAL_PER_CARA_BARATA:
+            partes.append("barata frente a su sector")
+        elif ratio >= UMBRAL_PER_CARA_BARATA:
+            partes.append("cara frente a su sector")
+        else:
+            partes.append("en línea con su sector")
+    if es_valido(historico) and historico > 0:
+        ratio = actual / historico
+        if ratio <= 1 / UMBRAL_PER_CARA_BARATA:
+            partes.append("barata frente a su propia historia")
+        elif ratio >= UMBRAL_PER_CARA_BARATA:
+            partes.append("cara frente a su propia historia")
+        else:
+            partes.append("en línea con su propia historia")
+
+    if not partes:
+        return None
+    return (partes[0][0].upper() + partes[0][1:] + (f", {partes[1]}" if len(partes) > 1 else "")) + "."
 
 
 def _aplicar_banda_cordura(valores: dict, ancla: float | None) -> tuple[dict, dict]:
-    """Recorta o excluye cada método según su distancia al ancla (consenso
-    de analistas, o mediana de los métodos si no hay cobertura suficiente).
+    """Recorta o excluye cada método según su distancia al ancla MIXTA
+    (mediana de los métodos propios junto con el consenso de analistas,
+    cuando este tiene cobertura suficiente).
 
     Dos niveles, asimétricos:
       - Dentro de [ancla/BANDA_SUELO, ancla*BANDA_TECHO]: el valor se usa
@@ -763,28 +778,54 @@ def _aplicar_banda_cordura(valores: dict, ancla: float | None) -> tuple[dict, di
 
 
 def calcular_fair_value(paquete: dict) -> dict:
-    """Combina DCF, múltiplos, EV/EBITDA sectorial, PEG y consenso en un
-    único valor objetivo, pasando primero por la banda de cordura."""
-    dcf, det_dcf = valorar_dcf(paquete)
-    mult, det_mult = valorar_multiplos(paquete)
-    ev_ebitda, det_ev_ebitda = valorar_ev_ebitda(paquete)
-    peg_val, det_peg = valorar_peg(paquete)
-    objetivo, multiplicador = _consenso_ponderable(paquete.get("consenso", {}))
-    n_analistas = paquete.get("consenso", {}).get("n_analistas")
+    """Motor de valor objetivo: cuatro métodos de una sola multiplicación
+    (sin DCF) más el consenso de analistas.
 
-    valores_metodos = {"dcf": dcf, "multiplos": mult, "ev_ebitda": ev_ebitda, "peg": peg_val}
+    Diseñado en 'Dudas Generales 2' para sustituir al motor anterior
+    (DCF + múltiplos + EV/EBITDA + PEG + consenso), que tenía dos problemas:
+    el DCF era, con diferencia, el método más alejado del consenso incluso
+    tras corregir su metodología (ver nota histórica en `valorar_dcf`, que
+    se conserva en el módulo pero deja de llamarse desde aquí); y el
+    consenso podía ser SIMULTÁNEAMENTE el ancla de la banda de cordura y,
+    con cobertura amplia, el componente de más peso de la media -- se
+    vigilaba a sí mismo.
 
-    if es_valido(objetivo) and es_valido(n_analistas) and float(n_analistas) >= BANDA_MIN_ANALISTAS:
-        ancla = objetivo
-    else:
-        disponibles = [v for v in valores_metodos.values() if es_valido(v)]
-        ancla = statistics.median(disponibles) if disponibles else None
+    Los cuatro métodos:
+      A. PER histórico propio × BPA TTM           (`valorar_per_ttm_propio`)
+      B. PER razonable × BPA forward               (`valorar_per_razonable_forward`)
+      C. PEG                                        (`valorar_peg`, sin cambios)
+      D. EV/EBITDA sectorial/industria              (`valorar_ev_ebitda`, sin cambios)
+    más el consenso de analistas, con pesos fijos (`PESOS_FAIR_VALUE`).
+
+    La banda de cordura usa una ANCLA MIXTA: la mediana de los cuatro
+    métodos propios junto con el consenso (si tiene cobertura suficiente),
+    todos con el mismo peso en la ancla -- ya no "consenso si hay >=N
+    analistas, si no la mediana de los métodos", que es lo que generaba la
+    circularidad. El consenso sigue sin pasar por la propia banda de
+    cordura (no tiene sentido recortarlo contra un ancla de la que él mismo
+    forma parte); los cuatro métodos propios sí.
+    """
+    a_val, det_a = valorar_per_ttm_propio(paquete)
+    b_val, det_b = valorar_per_razonable_forward(paquete)
+    c_val, det_c = valorar_peg(paquete)
+    d_val, det_d = valorar_ev_ebitda(paquete)
+
+    consenso = paquete.get("consenso", {})
+    objetivo = primero_valido(consenso.get("precio_objetivo"))
+    n_analistas = consenso.get("n_analistas")
+    consenso_fiable = es_valido(objetivo) and es_valido(n_analistas) and float(n_analistas) >= BANDA_MIN_ANALISTAS
+    consenso_val = float(objetivo) if consenso_fiable else None
+
+    valores_metodos = {"per_ttm": a_val, "per_forward": b_val, "peg": c_val, "ev_ebitda": d_val}
+
+    pool_ancla = [v for v in valores_metodos.values() if es_valido(v)]
+    if es_valido(consenso_val):
+        pool_ancla.append(consenso_val)
+    ancla = statistics.median(pool_ancla) if pool_ancla else None
 
     valores_ajustados, info_banda = _aplicar_banda_cordura(valores_metodos, ancla)
 
-    pesos = dict(PESOS_FAIR_VALUE)
-    pesos["consenso"] = pesos["consenso"] * multiplicador
-    resultado = ponderar({**valores_ajustados, "consenso": objetivo}, pesos)
+    resultado = ponderar({**valores_ajustados, "consenso": consenso_val}, PESOS_FAIR_VALUE)
 
     precio = paquete.get("precio")
     fv = resultado["valor"]
@@ -793,14 +834,13 @@ def calcular_fair_value(paquete: dict) -> dict:
     # Anotar en el detalle de cada método si la banda de cordura intervino,
     # para que la interfaz pueda mostrarlo junto a la fórmula.
     for clave, det in (
-        ("dcf", det_dcf), ("multiplos", det_mult),
-        ("ev_ebitda", det_ev_ebitda), ("peg", det_peg),
+        ("per_ttm", det_a), ("per_forward", det_b), ("peg", det_c), ("ev_ebitda", det_d),
     ):
         if clave in info_banda["excluidos"]:
             original = info_banda["excluidos"][clave]
             det["banda_cordura"] = {"accion": "excluido", "valor_original": original, "ancla": ancla}
             det["notas"].append(
-                f"Banda de cordura: {original:,.2f} \\$ se desvía demasiado del consenso/mediana "
+                f"Banda de cordura: {original:,.2f} \\$ se desvía demasiado del ancla mixta "
                 f"({ancla:,.2f} \\$) para ser fiable; método excluido de esta valoración."
             )
         elif clave in info_banda["recortes"]:
@@ -811,31 +851,31 @@ def calcular_fair_value(paquete: dict) -> dict:
             }
             det["notas"].append(
                 f"Banda de cordura: recortado de {original:,.2f} \\$ a {recortado:,.2f} \\$ "
-                f"({'techo' if borde == 'techo' else 'suelo'} de la banda respecto al consenso/mediana)."
+                f"({'techo' if borde == 'techo' else 'suelo'} de la banda respecto al ancla mixta)."
             )
 
     return {
         "fair_value": fv,
         "upside_pct": upside,
-        "peso_consenso_doble": multiplicador == 2.0,
         "ancla_banda_cordura": ancla,
         "componentes": {
-            "DCF": {"valor": dcf, "detalle": det_dcf},
-            "Múltiplos": {"valor": mult, "detalle": det_mult},
-            "EV/EBITDA sectorial": {"valor": ev_ebitda, "detalle": det_ev_ebitda},
-            "Valoración PEG": {"valor": peg_val, "detalle": det_peg},
+            "PER histórico propio × BPA TTM": {"valor": a_val, "detalle": det_a},
+            "PER razonable × BPA forward": {"valor": b_val, "detalle": det_b},
+            "Valoración PEG": {"valor": c_val, "detalle": det_c},
+            "EV/EBITDA sectorial": {"valor": d_val, "detalle": det_d},
             "Consenso analistas": {
-                "valor": objetivo,
+                "valor": consenso_val,
                 "detalle": {
                     "metodo": "Consenso",
-                    "n_analistas": paquete.get("consenso", {}).get("n_analistas"),
-                    "unanimidad": paquete.get("consenso", {}).get("unanimidad"),
-                    "notas": [] if es_valido(objetivo) else ["Sin cobertura de analistas"],
+                    "n_analistas": n_analistas,
+                    "unanimidad": consenso.get("unanimidad"),
+                    "notas": [] if consenso_fiable else [
+                        f"Sin cobertura suficiente (mínimo {BANDA_MIN_ANALISTAS} analistas)"
+                        if es_valido(objetivo) else "Sin cobertura de analistas"
+                    ],
                     "formula": (
-                        f"Precio objetivo medio de {n_analistas:.0f} analistas"
-                        + (" (⩾10 → peso doble en la media)" if multiplicador == 2.0 else "")
-                        + f" → {objetivo:,.2f} \\$"
-                        if es_valido(objetivo) and es_valido(n_analistas)
+                        f"Precio objetivo medio de {n_analistas:.0f} analistas → {objetivo:,.2f} \\$"
+                        if consenso_fiable
                         else None
                     ),
                 },
