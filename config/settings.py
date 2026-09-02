@@ -273,22 +273,19 @@ PESOS_CALIDAD = {
     metrica: peso for bloque in BLOQUES_CALIDAD.values() for metrica, peso in bloque.items()
 }
 
-# Margen bruto mediano por sector (heurístico propio, como el resto de
-# medianas sectoriales de este archivo). Se evalúa el nivel frente al sector,
-# no solo si crece: un 85% estable dice más sobre el foso competitivo que un
-# 40% que sube un punto.
+# Margen bruto por sector.
 MARGEN_BRUTO_MEDIANO_SECTOR = {
-    "Technology": 0.55,
-    "Communication Services": 0.45,
-    "Healthcare": 0.60,
-    "Consumer Cyclical": 0.35,
-    "Consumer Defensive": 0.32,
-    "Industrials": 0.30,
-    "Financial Services": 0.50,
-    "Energy": 0.28,
-    "Basic Materials": 0.25,
-    "Utilities": 0.35,
-    "Real Estate": 0.45,
+    "Basic Materials": 0.3737,
+    "Communication Services": 0.5058,
+    "Consumer Cyclical": 0.3791,
+    "Consumer Defensive": 0.3554,
+    "Energy": 0.3142,
+    "Financial Services": 0.7719,
+    "Healthcare": 0.5458,
+    "Industrials": 0.3201,
+    "Real Estate": 0.573,
+    "Technology": 0.5488,
+    "Utilities": 0.4713,
 }
 
 # ----------------------------------------------- pesos de timing (Bloque 5) ----
@@ -577,18 +574,19 @@ CONFIANZA_VOLATILIDAD_MAX = 1.15  # ATR en percentil 0   -> pesos x1,15
 
 # ---------------------------------- PER mediano por sector (fallback local) ----
 # Solo se usa cuando no se puede calcular la mediana con comparables reales.
+# PER (agregado, solo empresas con beneficio) por sector.
 PER_MEDIANO_SECTOR = {
-    "Technology": 28.0,
-    "Communication Services": 19.0,
-    "Consumer Cyclical": 20.0,
-    "Consumer Defensive": 21.0,
-    "Healthcare": 22.0,
-    "Financial Services": 13.0,
-    "Industrials": 21.0,
-    "Energy": 12.0,
-    "Basic Materials": 15.0,
-    "Utilities": 18.0,
-    "Real Estate": 30.0,
+    "Basic Materials": 23.3,
+    "Communication Services": 25.8,
+    "Consumer Cyclical": 26.9,
+    "Consumer Defensive": 19.7,
+    "Energy": 18.9,
+    "Financial Services": 18.0,
+    "Healthcare": 28.7,
+    "Industrials": 26.8,
+    "Real Estate": 28.5,
+    "Technology": 36.8,
+    "Utilities": 21.3,
 }
 
 # HUÉRFANAS A PROPÓSITO: las dos constantes de abajo alimentaban a
@@ -599,51 +597,68 @@ PER_MEDIANO_SECTOR = {
 # relativo). Se conservan documentadas por si se reevalúa ese enfoque.
 PER_HIST_TECHO_VS_SECTOR = 1.3
 PESO_PER_SECTOR = 0.60
+# Margen neto por sector.
 MARGEN_NETO_MEDIANO_SECTOR = {
-    "Technology": 0.18,
-    "Communication Services": 0.13,
-    "Consumer Cyclical": 0.07,
-    "Consumer Defensive": 0.06,
-    "Healthcare": 0.10,
-    "Financial Services": 0.20,
-    "Industrials": 0.08,
-    "Energy": 0.09,
-    "Basic Materials": 0.08,
-    "Utilities": 0.11,
-    "Real Estate": 0.20,
-}
-ROE_MEDIANO_SECTOR = {
-    "Technology": 0.20,
-    "Communication Services": 0.14,
-    "Consumer Cyclical": 0.15,
-    "Consumer Defensive": 0.16,
-    "Healthcare": 0.13,
-    "Financial Services": 0.12,
-    "Industrials": 0.15,
-    "Energy": 0.13,
-    "Basic Materials": 0.10,
-    "Utilities": 0.09,
-    "Real Estate": 0.07,
+    "Basic Materials": 0.1322,
+    "Communication Services": 0.1033,
+    "Consumer Cyclical": 0.0557,
+    "Consumer Defensive": 0.0657,
+    "Energy": 0.0798,
+    "Financial Services": 0.221,
+    "Healthcare": 0.0685,
+    "Industrials": 0.075,
+    "Real Estate": 0.1301,
+    "Technology": 0.1846,
+    "Utilities": 0.1124,
 }
 
-# ----------------------------- medias sectoriales adicionales (fallback) ----
-# Mismo criterio que las tablas anteriores: estimaciones heurísticas propias,
-# usadas solo para resaltar en el apartado "Fundamentales" (Bloque 3) qué
-# métricas destacan sobre la media de su sector. No sustituyen una fuente de
-# comparables reales; si se detecta una mejor, migrar aquí.
-FORWARD_PER_MEDIANO_SECTOR = {
-    "Technology": 24.0,
-    "Communication Services": 17.0,
-    "Consumer Cyclical": 18.0,
-    "Consumer Defensive": 19.0,
-    "Healthcare": 19.0,
-    "Financial Services": 12.0,
-    "Industrials": 18.0,
-    "Energy": 11.0,
-    "Basic Materials": 13.0,
-    "Utilities": 16.0,
-    "Real Estate": 26.0,
+# ROE por sector.
+ROE_MEDIANO_SECTOR = {
+    "Basic Materials": 0.1503,
+    "Communication Services": 0.1322,
+    "Consumer Cyclical": 0.206,
+    "Consumer Defensive": 0.1481,
+    "Energy": 0.1133,
+    "Financial Services": 0.1678,
+    "Healthcare": 0.1031,
+    "Industrials": 0.1731,
+    "Real Estate": 0.0504,
+    "Technology": 0.2341,
+    "Utilities": 0.089,
 }
+
+# ---------------------------------------------------------------------------
+# TABLAS DE SECTOR -- agregadas desde Damodaran (edición 2026-01-05, EE.UU.) por
+# `generar_tablas_damodaran.py` + `construir_tablas_nuevas()`: media ponderada
+# por nº de empresas de cada industria Damodaran que cae en el sector, según
+# el mapeo oficial de yfinance (`yfinance.const.SECTOR_INDUSTY_MAPPING`, con su
+# separador em-dash normalizado -- sin normalizar, esta tabla sale vacía o
+# gravemente sesgada en silencio; ver ESTADO_PROYECTO.md).
+#
+# Sustituyen a las heurísticas anteriores (11 valores estimados a ojo cada
+# una). Regenerar con `generar_tablas_damodaran.py` cuando Damodaran publique
+# una edición nueva.
+
+# PER forward por sector.
+FORWARD_PER_MEDIANO_SECTOR = {
+    "Basic Materials": 22.9,
+    "Communication Services": 35.2,
+    "Consumer Cyclical": 24.3,
+    "Consumer Defensive": 17.7,
+    "Energy": 22.6,
+    "Financial Services": 14.8,
+    "Healthcare": 44.0,
+    "Industrials": 25.8,
+    "Real Estate": 46.2,
+    "Technology": 35.7,
+    "Utilities": 21.4,
+}
+
+# HUÉRFANA A PROPÓSITO: no la usa ningún método de `core/valoracion.py`
+# (verificado por grep -- no aparece en ninguna llamada de `valorar_*` ni en
+# `puntuar_calidad`). Se conserva sin actualizar porque actualizar un valor
+# que no se lee en ningún sitio no tiene efecto ni sentido. Candidata a
+# eliminar en una limpieza futura si se confirma que sigue sin uso.
 PEG_MEDIANO_SECTOR = {
     "Technology": 2.0,
     "Communication Services": 1.8,
@@ -657,210 +672,451 @@ PEG_MEDIANO_SECTOR = {
     "Utilities": 2.5,
     "Real Estate": 2.3,
 }
+
+# EV/EBITDA (solo empresas con EBITDA positivo) por sector.
 EV_EBITDA_MEDIANO_SECTOR = {
-    "Technology": 18.0,
-    "Communication Services": 10.0,
-    "Consumer Cyclical": 12.0,
-    "Consumer Defensive": 13.0,
-    "Healthcare": 14.0,
-    "Financial Services": 11.0,
-    "Industrials": 12.0,
-    "Energy": 6.0,
-    "Basic Materials": 8.0,
-    "Utilities": 10.0,
-    "Real Estate": 16.0,
+    "Basic Materials": 11.1,
+    "Communication Services": 17.0,
+    "Consumer Cyclical": 13.9,
+    "Consumer Defensive": 12.0,
+    "Energy": 8.2,
+    "Financial Services": 40.9,
+    "Healthcare": 16.7,
+    "Industrials": 15.7,
+    "Real Estate": 19.8,
+    "Technology": 23.0,
+    "Utilities": 13.2,
 }
 
-# Múltiplo EV/EBITDA por INDUSTRIA (más específico que el sector, usado con
-# prioridad sobre él con fallback a EV_EBITDA_MEDIANO_SECTOR). Nace del caso
-# Healthcare: un único múltiplo de 14x no distingue biotecnología en
-# crecimiento (Biotechnology, ~40 años) de una aseguradora médica (Healthcare
-# Plans, 7-9x reales) o una farmacéutica madura. Poblado solo donde la
-# desviación observada en la calibración era material; el resto de
-# industrias sigue cayendo al múltiplo de sector.
-EV_EBITDA_MEDIANO_INDUSTRIA = {
-    "Drug Manufacturers - General": 15.0,
-    "Drug Manufacturers - Specialty & Generic": 10.0,
-    "Healthcare Plans": 11.0,
-    "Medical Devices": 17.0,
-    "Medical Instruments & Supplies": 22.0,
-    "Diagnostics & Research": 16.0,
-    "Medical Distribution": 9.0,
-    "Healthcare Providers & Services": 9.0,
-    "Semiconductors": 18.0,
-    "Semiconductor Equipment & Materials": 17.0,
-    "Software - Infrastructure": 22.0,
-    "Software - Application": 17.0,
-    "Information Technology Services": 13.0,
-    "Consumer Electronics": 18.0,
-    "Computer Hardware": 14.0,
-    "REIT - Specialty": 22.0,
-    "REIT - Industrial": 21.0,
-    "REIT - Retail": 17.0,
-    "REIT - Residential": 20.0,
-    "REIT - Healthcare Facilities": 18.0,
-    "REIT - Office": 13.0,
-    "Internet Content & Information": 14.0,
-    "Telecom Services": 7.0,
-    "Entertainment": 12.0,
-    "Internet Retail": 16.0,
-    "Auto Manufacturers": 8.0,
-    "Home Improvement Retail": 14.0,
-    "Beverages - Non-Alcoholic": 18.0,
-    "Household & Personal Products": 15.0,
-    "Discount Stores": 14.0,
-    "Credit Services": 20.0,
-    "Banks - Diversified": 11.0,
-    "Railroads": 13.0,
-    "Farm & Heavy Construction Machinery": 12.0,
-    "Aerospace & Defense": 15.0,
-    "Oil & Gas Integrated": 6.0,
-    "Oil & Gas Equipment & Services": 7.0,
-    "Specialty Chemicals": 14.0,
-    "Steel": 7.0,
-    "Utilities - Regulated Electric": 12.0,
-    # --- Ampliación a cobertura completa (dataset Damodaran, enero 2026) ---
-    # Las 40 entradas de arriba son las originales, calibradas contra
-    # consenso sobre la cesta de 29 tickers, y NO se han tocado. Las de
-    # abajo cubren las 99 industrias restantes de la taxonomía de yfinance
-    # mapeando las 91 categorías de Damodaran (más gruesas que las 145 de
-    # Yahoo/GICS, así que varias son la categoría más cercana, no un match
-    # 1:1). Con esto la tabla cubre las 145 industrias reales: 139 con
-    # múltiplo propio y 6 excluidas por decisión de diseño (ver abajo).
-    #
-    # Nota sobre el separador: yfinance expone las industrias con raya larga
-    # en su constante interna `SECTOR_INDUSTY_MAPPING`, pero el campo que
-    # consume la app -- `info["industry"]` -- las devuelve con guion y
-    # espacios ("REIT - Retail"). Las claves siguen ESA forma, verificada
-    # contra datos reales; escribirlas con raya larga las dejaría muertas.
-    "Lumber & Wood Production": 8.2,
-    "Other Precious Metals & Mining": 10.7,
-    "Copper": 11.4,
-    "Other Industrial Metals & Mining": 11.4,
-    "Chemicals": 8.4,
-    "Paper & Paper Products": 8.2,
-    "Silver": 10.7,
-    "Aluminum": 11.4,
-    "Building Materials": 11.6,
-    "Agricultural Inputs": 8.6,
-    "Gold": 10.7,
-    "Coking Coal": 10.4,
-    "Broadcasting": 7.8,
+# Industria de yfinance -> industria de Damodaran (edicion 2026-01-05). Escrito
+# a mano y verificado con generar_tablas_damodaran.py: el emparejamiento
+# difuso por nombre falla en silencio (ej. "Utilities - Regulated Electric" ->
+# "Coal & Related Energy"). None = sin equivalente defendible; `ponderar()`
+# redistribuye el peso del método afectado en vez de forzar una referencia.
+#
+# Regenerar con generar_tablas_damodaran.py cuando Damodaran publique una
+# edición nueva (~enero de cada año). Las entradas marcadas RESUELTO tienen
+# más de una traducción defendible; se decidió tras medir la sensibilidad
+# real sobre la cesta de 29 tickers (ver ESTADO_PROYECTO.md).
+INDUSTRIA_YF_A_DAMODARAN = {
+    "Advertising Agencies": "Advertising",
+    "Aerospace & Defense": "Aerospace/Defense",
+    "Agricultural Inputs": "Chemical (Basic)",
+    "Airlines": "Air Transport",
+    "Airports & Air Services": "Transportation",
+    "Aluminum": "Metals & Mining",
+    "Apparel Manufacturing": "Apparel",
+    "Apparel Retail": "Retail (Special Lines)",
+    "Asset Management": "Investments & Asset Management",
+    "Auto & Truck Dealerships": "Retail (Automotive)",
+    "Auto Manufacturers": "Auto & Truck",
+    "Auto Parts": "Auto Parts",
+    "Banks - Diversified": "Bank (Money Center)",
+    "Banks - Regional": "Banks (Regional)",
+    "Beverages - Brewers": "Beverage (Alcoholic)",
+    "Beverages - Non-Alcoholic": "Beverage (Soft)",
+    "Beverages - Wineries & Distilleries": "Beverage (Alcoholic)",
+    "Biotechnology": "Drugs (Biotechnology)",
+    "Broadcasting": "Broadcasting",
+    "Building Materials": "Building Materials",
+    "Building Products & Equipment": "Construction Supplies",
+    "Business Equipment & Supplies": "Office Equipment & Services",
+    "Capital Markets": "Brokerage & Investment Banking",
+    "Chemicals": "Chemical (Diversified)",
+    "Coking Coal": "Coal & Related Energy",
+    "Communication Equipment": "Telecom. Equipment",
+    "Computer Hardware": "Computers/Peripherals",
+    "Confectioners": "Food Processing",
+    "Conglomerates": "Diversified",
+    "Consulting Services": "Business & Consumer Services",
+    "Consumer Electronics": "Electronics (Consumer & Office)",
+    "Copper": "Metals & Mining",
+    "Credit Services": "Financial Svcs. (Non-bank & Insurance)",
+    "Department Stores": "Retail (General)",
+    "Diagnostics & Research": "Healthcare Products",
+    "Discount Stores": "Retail (General)",
+    "Drug Manufacturers - General": "Drugs (Pharmaceutical)",
+    "Drug Manufacturers - Specialty & Generic": "Drugs (Pharmaceutical)",
+    "Education & Training Services": "Education",
+    "Electrical Equipment & Parts": "Electrical Equipment",
+    "Electronic Components": "Electronics (General)",
+    "Electronic Gaming & Multimedia": "Software (Entertainment)",
+    "Electronics & Computer Distribution": "Retail (Distributors)",
+    "Engineering & Construction": "Engineering/Construction",
+    "Entertainment": "Entertainment",
+    "Farm & Heavy Construction Machinery": "Machinery",
+    "Farm Products": "Farming/Agriculture",
+    "Financial Conglomerates": "Diversified",
+    "Financial Data & Stock Exchanges": "Information Services",
+    "Food Distribution": "Food Wholesalers",
+    "Footwear & Accessories": "Shoe",
+    "Furnishings, Fixtures & Appliances": "Furn/Home Furnishings",
+    "Gambling": "Hotel/Gaming",
+    "Gold": "Precious Metals",
+    "Grocery Stores": "Retail (Grocery and Food)",
+    "Health Information Services": "Heathcare Information and Technology",
+    "Healthcare Plans": "Healthcare Support Services",
+    "Healthcare Providers & Services": "Healthcare Support Services",
+    "Home Improvement Retail": "Retail (Building Supply)",
+    "Household & Personal Products": "Household Products",
+    "Industrial Distribution": "Retail (Distributors)",
+    "Information Technology Services": "Computer Services",
+    "Infrastructure Operations": "Engineering/Construction",
+    "Insurance - Diversified": "Insurance (General)",
+    "Insurance - Life": "Insurance (Life)",
+    "Insurance - Property & Casualty": "Insurance (Prop/Cas.)",
+    "Insurance - Reinsurance": "Reinsurance",
+    "Insurance - Specialty": "Insurance (General)",
+    "Insurance Brokers": "Insurance (General)",
+    "Integrated Freight & Logistics": "Transportation",
+    "Internet Content & Information": "Software (Internet)",
+    "Internet Retail": "Retail (General)",
+    "Leisure": "Recreation",
+    "Lodging": "Hotel/Gaming",
+    "Lumber & Wood Production": "Paper/Forest Products",
+    "Luxury Goods": "Retail (Special Lines)",
+    "Marine Shipping": "Shipbuilding & Marine",
+    "Medical Care Facilities": "Hospitals/Healthcare Facilities",
+    "Medical Devices": "Healthcare Products",
+    "Medical Distribution": "Healthcare Support Services",
+    "Medical Instruments & Supplies": "Healthcare Products",
+    "Metal Fabrication": "Machinery",
+    "Mortgage Finance": "Financial Svcs. (Non-bank & Insurance)",
+    "Oil & Gas Drilling": "Oilfield Svcs/Equip.",
+    "Oil & Gas E&P": "Oil/Gas (Production and Exploration)",
+    "Oil & Gas Equipment & Services": "Oilfield Svcs/Equip.",
+    "Oil & Gas Integrated": "Oil/Gas (Integrated)",
+    "Oil & Gas Midstream": "Oil/Gas Distribution",
+    "Oil & Gas Refining & Marketing": "Oil/Gas (Integrated)",
+    "Other Industrial Metals & Mining": "Metals & Mining",
+    "Other Precious Metals & Mining": "Precious Metals",
+    "Packaged Foods": "Food Processing",
+    "Packaging & Containers": "Packaging & Container",
+    "Paper & Paper Products": "Paper/Forest Products",
+    "Personal Services": "Business & Consumer Services",
+    "Pharmaceutical Retailers": "Retail (General)",
+    "Pollution & Treatment Controls": "Environmental & Waste Services",
+    "Publishing": "Publishing & Newspapers",
+    "REIT - Diversified": "R.E.I.T.",
+    "REIT - Healthcare Facilities": "R.E.I.T.",
+    "REIT - Hotel & Motel": "R.E.I.T.",
+    "REIT - Industrial": "R.E.I.T.",
+    "REIT - Mortgage": "R.E.I.T.",
+    "REIT - Office": "R.E.I.T.",
+    "REIT - Residential": "R.E.I.T.",
+    "REIT - Retail": "Retail (REITs)",
+    "REIT - Specialty": "R.E.I.T.",
+    "Railroads": "Transportation (Railroads)",
+    "Real Estate - Development": "Real Estate (Development)",
+    "Real Estate - Diversified": "Real Estate (General/Diversified)",
+    "Real Estate Services": "Real Estate (Operations & Services)",
+    "Recreational Vehicles": "Recreation",
+    "Rental & Leasing Services": "Business & Consumer Services",
+    "Residential Construction": "Homebuilding",
+    "Resorts & Casinos": "Hotel/Gaming",
+    "Restaurants": "Restaurant/Dining",
+    "Scientific & Technical Instruments": "Electronics (General)",
+    "Security & Protection Services": "Business & Consumer Services",
+    "Semiconductor Equipment & Materials": "Semiconductor Equip",
+    "Semiconductors": "Semiconductor",
+    "Shell Companies": None,
+    "Silver": "Precious Metals",
+    "Software - Application": "Software (System & Application)",
+    "Software - Infrastructure": "Software (System & Application)",
+    "Solar": "Green & Renewable Energy",
+    "Specialty Business Services": "Business & Consumer Services",
+    "Specialty Chemicals": "Chemical (Specialty)",
+    "Specialty Industrial Machinery": "Machinery",
+    "Specialty Retail": "Retail (Special Lines)",
+    "Staffing & Employment Services": "Business & Consumer Services",
+    "Steel": "Steel",
+    "Telecom Services": "Telecom. Services",
+    "Textile Manufacturing": "Apparel",
+    "Thermal Coal": "Coal & Related Energy",
+    "Tobacco": "Tobacco",
+    "Tools & Accessories": "Machinery",
+    "Travel Services": "Business & Consumer Services",
+    "Trucking": "Trucking",
+    "Uranium": "Metals & Mining",
+    "Utilities - Diversified": "Utility (General)",
+    "Utilities - Independent Power Producers": "Power",
+    "Utilities - Regulated Electric": "Utility (General)",
+    "Utilities - Regulated Gas": "Utility (General)",
+    "Utilities - Regulated Water": "Utility (Water)",
+    "Utilities - Renewable": "Green & Renewable Energy",
+    "Waste Management": "Environmental & Waste Services",
+}
+
+# Industrias Damodaran (edición 2026-01-05) sin PER de referencia fiable: muestra
+# pequeña (n<10), exceso de empresas en pérdidas (>75%), o contradicción entre
+# el PER forward y el PER agregado (>50% de divergencia). Usado por el método B
+# del motor de valor objetivo: si el PER histórico propio es inestable Y la
+# industria de referencia está aquí, el método se EXCLUYE en vez de usar un
+# múltiplo que la propia generación de tablas ya marcó como dudoso.
+PER_INDUSTRIAS_SIN_REFERENCIA_FIABLE = {
+    "Advertising": "perdidas=79%, fwd/agg=2.07",
+    "Auto & Truck": "perdidas=82%, fwd/agg=0.41",
+    "Cable TV": "n=9, fwd/agg=1.82",
+    "Chemical (Basic)": "perdidas=76%",
+    "Chemical (Diversified)": "n=4, perdidas=100%",
+    "Coal & Related Energy": "perdidas=81%, fwd/agg=1.74",
+    "Computer Services": "fwd/agg=2.17",
+    "Diversified": "perdidas=80%",
+    "Drugs (Biotechnology)": "perdidas=90%, fwd/agg=1.99",
+    "Drugs (Pharmaceutical)": "perdidas=85%",
+    "Electronics (Consumer & Office)": "n=8, perdidas=100%",
+    "Entertainment": "perdidas=83%",
+    "Environmental & Waste Services": "perdidas=79%, fwd/agg=1.78",
+    "Green & Renewable Energy": "perdidas=87%, fwd/agg=1.65",
+    "Healthcare Products": "perdidas=76%",
+    "Healthcare Support Services": "fwd/agg=2.62",
+    "Heathcare Information and Technology": "perdidas=77%",
+    "Metals & Mining": "perdidas=85%",
+    "Oil/Gas (Integrated)": "n=4",
+    "Oil/Gas Distribution": "fwd/agg=2.29",
+    "Paper/Forest Products": "n=6",
+    "Precious Metals": "perdidas=86%",
+    "R.E.I.T.": "fwd/agg=1.61",
+    "Real Estate (Development)": "perdidas=79%",
+    "Real Estate (Operations & Services)": "fwd/agg=2.13",
+    "Recreation": "fwd/agg=2.09",
+    "Reinsurance": "n=1",
+    "Retail (Distributors)": "fwd/agg=1.95",
+    "Rubber& Tires": "n=3, perdidas=100%",
+    "Shipbuilding & Marine": "n=8",
+    "Software (Internet)": "fwd/agg=1.86",
+    "Telecom (Wireless)": "fwd/agg=1.83",
+    "Telecom. Services": "perdidas=79%, fwd/agg=3.30",
+    "Transportation (Railroads)": "n=4",
+}
+
+# Industrias Damodaran (edición 2026-01-05) sin EV/EBITDA de referencia fiable:
+# muestra pequeña (n<10), o divergencia >50% entre el múltiplo de "solo
+# empresas con EBITDA positivo" y el de "todas las empresas" (indica que la
+# muestra positiva ya no representa a la industria real). Diagnóstico propio,
+# independiente del de PER: las señales de contaminación son distintas.
+# Usado por el método D: si la industria de referencia está aquí, se excluye
+# en vez de usar el múltiplo (sin caer a sector: la industria SÍ tenía
+# múltiplo, es que no es de fiar).
+EV_EBITDA_INDUSTRIAS_SIN_REFERENCIA_FIABLE = {
+    "Aerospace/Defense": "todas/positivas=1.55",
+    "Cable TV": "n=9",
+    "Chemical (Diversified)": "n=4",
+    "Coal & Related Energy": "todas/positivas=1.88",
+    "Drugs (Biotechnology)": "todas/positivas=3.26",
+    "Electronics (Consumer & Office)": "n=8",
+    "Financial Svcs. (Non-bank & Insurance)": "todas/positivas=1.56",
+    "Oil/Gas (Integrated)": "n=4",
+    "Paper/Forest Products": "n=6",
+    "Precious Metals": "todas/positivas=1.62",
+    "Real Estate (Operations & Services)": "todas/positivas=1.68",
+    "Reinsurance": "n=1",
+    "Rubber& Tires": "n=3",
+    "Shipbuilding & Marine": "n=8",
+    "Software (Internet)": "todas/positivas=3.32",
+    "Transportation (Railroads)": "n=4",
+}
+
+# Industrias REIT: el BPA GAAP no es una magnitud económica válida para este tipo
+# de negocio (la amortización del inmueble se come el beneficio contable sin
+# reflejar la realidad económica; el estándar del sector es FFO/AFFO, no BPA).
+# Los métodos A, B y C dependen todos de BPA y se EXCLUYEN para estas
+# industrias en `calcular_fair_value` -- el fair value de un REIT se apoya
+# solo en D (EV/EBITDA, no distorsionado por amortización) y en el consenso.
+# Corrección PARCIAL y deliberadamente conservadora mientras no se implemente
+# el método P/FFO completo (ver ESTADO_PROYECTO.md, mejora pendiente).
+INDUSTRIAS_REIT = {
+    "REIT - Diversified",
+    "REIT - Healthcare Facilities",
+    "REIT - Hotel & Motel",
+    "REIT - Industrial",
+    "REIT - Mortgage",
+    "REIT - Office",
+    "REIT - Residential",
+    "REIT - Retail",
+    "REIT - Specialty",
+}
+
+# EV/EBITDA por industria -- Damodaran edición 2026-01-05, vía
+# INDUSTRIA_YF_A_DAMODARAN, con OVERRIDES_INDUSTRIA_EV_EBITDA aplicado encima.
+EV_EBITDA_INDUSTRIA_DAMODARAN = {
     "Advertising Agencies": 12.0,
-    "Electronic Gaming & Multimedia": 22.0,
-    "Publishing": 11.2,
-    "Footwear & Accessories": 16.9,
-    "Residential Construction": 8.9,
-    "Furnishings, Fixtures & Appliances": 11.3,
-    "Restaurants": 17.5,
-    "Recreational Vehicles": 10.4,
-    "Auto & Truck Dealerships": 14.8,
-    "Resorts & Casinos": 14.9,
-    "Lodging": 14.9,
-    "Textile Manufacturing": 10.3,
-    "Specialty Retail": 11.5,
-    "Travel Services": 10.4,
-    "Gambling": 14.9,
-    "Personal Services": 14.3,
-    "Packaging & Containers": 9.7,
-    "Leisure": 10.4,
-    "Auto Parts": 6.4,
+    "Aerospace & Defense": 21.6,
+    "Agricultural Inputs": 8.6,
+    "Airlines": 7.6,
+    "Airports & Air Services": 12.5,
+    "Aluminum": 11.4,
     "Apparel Manufacturing": 10.3,
     "Apparel Retail": 11.5,
-    "Luxury Goods": 11.5,
-    "Department Stores": 17.4,
-    "Confectioners": 10.0,
-    "Beverages - Wineries & Distilleries": 8.6,
-    "Food Distribution": 11.1,
-    "Education & Training Services": 9.3,
-    "Tobacco": 13.5,
-    "Packaged Foods": 10.0,
-    "Farm Products": 16.0,
-    "Grocery Stores": 8.9,
-    "Beverages - Brewers": 8.6,
-    "Oil & Gas Midstream": 11.6,
-    "Thermal Coal": 10.4,
-    "Uranium": 11.4,
-    "Oil & Gas Drilling": 8.6,
-    "Oil & Gas E&P": 5.2,
-    "Oil & Gas Refining & Marketing": 8.2,
-    "Banks - Regional": 11.0,
-    "Insurance - Property & Casualty": 8.4,
-    "Insurance - Life": 12.5,
-    "Insurance - Specialty": 15.8,
-    # Damodaran da 38x para "Investments & Asset Mgmt", un múltiplo que
-    # refleja gestoras de alto crecimiento y no una gestora tradicional.
-    # Se deja porque el sector no tiene mejor referencia, pero es el valor
-    # menos fiable de la tabla.
     "Asset Management": 38.0,
-    "Insurance Brokers": 15.8,
-    "Insurance - Reinsurance": 8.7,
-    "Financial Data & Stock Exchanges": 11.5,
-    "Insurance - Diversified": 15.8,
-    "Medical Care Facilities": 8.9,
-    "Pharmaceutical Retailers": 11.2,
-    "Health Information Services": 21.3,
-    "Airports & Air Services": 7.6,
-    "Airlines": 7.6,
-    "Rental & Leasing Services": 14.3,
-    "Specialty Industrial Machinery": 16.2,
-    "Conglomerates": 11.4,
-    "Staffing & Employment Services": 14.3,
-    "Metal Fabrication": 11.6,
-    "Integrated Freight & Logistics": 12.6,
-    "Consulting Services": 14.3,
-    "Trucking": 10.4,
-    "Business Equipment & Supplies": 8.6,
-    "Electrical Equipment & Parts": 24.6,
-    "Industrial Distribution": 13.7,
-    "Pollution & Treatment Controls": 15.6,
+    "Auto & Truck Dealerships": 14.8,
+    "Auto Manufacturers": 47.8,
+    "Auto Parts": 6.4,
+    "Beverages - Brewers": 8.6,
+    "Beverages - Non-Alcoholic": 16.9,
+    "Beverages - Wineries & Distilleries": 8.6,
+    "Biotechnology": 15.8,
+    "Broadcasting": 7.8,
+    "Building Materials": 11.6,
     "Building Products & Equipment": 16.8,
-    "Tools & Accessories": 16.2,
-    "Specialty Business Services": 14.3,
+    "Business Equipment & Supplies": 8.6,
+    "Chemicals": 8.4,
+    "Coking Coal": 10.4,
+    "Communication Equipment": 24.1,
+    "Computer Hardware": 25.4,
+    "Confectioners": 10.0,
+    "Conglomerates": 11.4,
+    "Consulting Services": 14.3,
+    "Consumer Electronics": 30.7,
+    "Copper": 11.4,
+    "Credit Services": 57.5,
+    "Department Stores": 17.4,
+    "Diagnostics & Research": 19.8,
+    "Discount Stores": 17.4,
+    "Drug Manufacturers - General": 15.2,
+    "Drug Manufacturers - Specialty & Generic": 15.2,
+    "Education & Training Services": 9.3,
+    "Electrical Equipment & Parts": 24.6,
+    "Electronic Components": 20.0,
+    "Electronic Gaming & Multimedia": 22.0,
+    "Electronics & Computer Distribution": 13.7,
     "Engineering & Construction": 17.2,
-    "Waste Management": 15.6,
-    "Security & Protection Services": 14.3,
+    "Entertainment": 19.4,
+    "Farm & Heavy Construction Machinery": 16.2,
+    "Farm Products": 16.0,
+    "Financial Conglomerates": 11.4,
+    "Financial Data & Stock Exchanges": 11.5,
+    "Food Distribution": 11.1,
+    "Footwear & Accessories": 16.9,
+    "Furnishings, Fixtures & Appliances": 11.3,
+    "Gambling": 14.9,
+    "Gold": 10.7,
+    "Grocery Stores": 8.9,
+    "Health Information Services": 21.3,
+    "Healthcare Plans": 11.2,
+    "Healthcare Providers & Services": 11.2,
+    "Home Improvement Retail": 14.4,
+    "Household & Personal Products": 13.2,
+    "Industrial Distribution": 13.7,
+    "Information Technology Services": 14.1,
+    "Infrastructure Operations": 17.2,
+    "Insurance - Diversified": 15.8,
+    "Insurance - Life": 12.5,
+    "Insurance - Property & Casualty": 8.4,
+    "Insurance - Reinsurance": 8.7,
+    "Insurance - Specialty": 15.8,
+    "Insurance Brokers": 15.8,
+    "Integrated Freight & Logistics": 12.5,
+    "Internet Content & Information": 30.3,
+    "Internet Retail": 17.4,
+    "Leisure": 10.4,
+    "Lodging": 14.9,
+    "Lumber & Wood Production": 8.2,
+    "Luxury Goods": 11.5,
     "Marine Shipping": 8.0,
-    "Infrastructure Operations": 12.6,
-    "REIT - Hotel & Motel": 19.9,
+    "Medical Care Facilities": 8.9,
+    "Medical Devices": 19.8,
+    "Medical Distribution": 11.2,
+    "Medical Instruments & Supplies": 19.8,
+    "Metal Fabrication": 16.2,
+    "Mortgage Finance": 57.5,
+    "Oil & Gas Drilling": 8.6,
+    "Oil & Gas E&P": 5.1,
+    "Oil & Gas Equipment & Services": 8.6,
+    "Oil & Gas Integrated": 8.2,
+    "Oil & Gas Midstream": 11.6,
+    "Oil & Gas Refining & Marketing": 8.2,
+    "Other Industrial Metals & Mining": 11.4,
+    "Other Precious Metals & Mining": 10.7,
+    "Packaged Foods": 10.0,
+    "Packaging & Containers": 9.7,
+    "Paper & Paper Products": 8.2,
+    "Personal Services": 14.3,
+    "Pharmaceutical Retailers": 17.4,
+    "Pollution & Treatment Controls": 15.6,
+    "Publishing": 11.2,
     "REIT - Diversified": 19.9,
+    "REIT - Healthcare Facilities": 19.9,
+    "REIT - Hotel & Motel": 19.9,
+    "REIT - Industrial": 19.9,
+    "REIT - Mortgage": 19.9,
+    "REIT - Office": 19.9,
+    "REIT - Residential": 19.9,
+    "REIT - Retail": 16.7,
+    "REIT - Specialty": 19.9,
+    "Railroads": 13.5,
     "Real Estate - Development": 10.2,
     "Real Estate - Diversified": 17.3,
-    "Real Estate Services": 21.9,
-    "Electronics & Computer Distribution": 13.7,
-    "Communication Equipment": 24.1,
+    "Real Estate Services": 22.0,
+    "Recreational Vehicles": 10.4,
+    "Rental & Leasing Services": 14.3,
+    "Residential Construction": 8.9,
+    "Resorts & Casinos": 14.9,
+    "Restaurants": 17.5,
     "Scientific & Technical Instruments": 20.0,
-    "Electronic Components": 20.0,
-    # Solar por fin con entrada propia: antes caía al 18x genérico de
-    # Technology, que es justo lo que sobrevaloraba a FSLR.
+    "Security & Protection Services": 14.3,
+    "Semiconductor Equipment & Materials": 24.7,
+    "Semiconductors": 34.8,
+    "Silver": 10.7,
+    "Software - Application": 24.5,
+    "Software - Infrastructure": 24.5,
     "Solar": 13.4,
+    "Specialty Business Services": 14.3,
+    "Specialty Chemicals": 13.4,
+    "Specialty Industrial Machinery": 16.2,
+    "Specialty Retail": 11.5,
+    "Staffing & Employment Services": 14.3,
+    "Steel": 11.6,
+    "Telecom Services": 6.5,
+    "Textile Manufacturing": 10.3,
+    "Thermal Coal": 10.4,
+    "Tobacco": 13.5,
+    "Tools & Accessories": 16.2,
+    "Travel Services": 14.3,
+    "Trucking": 10.4,
+    "Uranium": 11.4,
+    "Utilities - Diversified": 13.7,
+    "Utilities - Independent Power Producers": 12.4,
+    "Utilities - Regulated Electric": 13.7,
+    "Utilities - Regulated Gas": 13.7,
     "Utilities - Regulated Water": 14.1,
     "Utilities - Renewable": 13.4,
-    "Utilities - Diversified": 13.7,
-    "Utilities - Regulated Gas": 13.7,
-    "Utilities - Independent Power Producers": 12.4,
+    "Waste Management": 15.6,
 }
 
-# Industrias donde EV/EBITDA se EXCLUYE directamente (no se usa ni siquiera
-# como fallback a sector). Caso Biotechnology: se probaron múltiplos de
-# 20x y 32x y ninguno acercó NBIX al consenso -- el problema no es el
-# múltiplo, es que el EBITDA de una biotech en rampa comercial (o aún sin
-# ingresos de producto) no es una magnitud estable a la que aplicar un
-# múltiplo sectorial.
-# Se amplía con 5 industrias del sector Financial Services por la MISMA
-# razón por la que DCF_SECTORES_APALANCADOS ya trata aparte a ese sector: su
-# negocio ES apalancarse, así que no generan un EBITDA operativo comparable
-# al de una empresa industrial. Rellenarlas con un múltiplo aparentaría el
-# mismo rigor que el resto de la tabla sin tenerlo -- es preferible que el
-# método se excluya y `ponderar()` redistribuya su peso, que es exactamente
-# para lo que existe.
+# Ajustes manuales YA EXISTENTES antes de esta migración, preservados a
+# propósito en vez de sobrescritos por el dato agregado de Damodaran (que da
+# 21.6x, 34.8x y 11.6x respectivamente para estas tres). No se conoce con
+# certeza la razón original de cada ajuste -- se preservan por precaución, no
+# porque se haya reverificado el motivo. PENDIENTE: ejecutar el contraste
+# completo (`generar_tablas_damodaran.py` con TABLAS_ACTUALES) sobre las 139
+# industrias restantes para detectar si hay más overrides deliberados que
+# esta migración haya pisado sin darse cuenta (ver ESTADO_PROYECTO.md).
+OVERRIDES_INDUSTRIA_EV_EBITDA = {
+    "Aerospace & Defense": 15.0,
+    "Semiconductors": 18.0,
+    "Steel": 7.0,
+}
+
+EV_EBITDA_MEDIANO_INDUSTRIA = {**EV_EBITDA_INDUSTRIA_DAMODARAN, **OVERRIDES_INDUSTRIA_EV_EBITDA}
+
 EV_EBITDA_INDUSTRIAS_EXCLUIDAS = {
+    # -- exclusión por RUIDO DE DATO en la industria (EBITDA no es magnitud
+    #    estable a la que aplicar un múltiplo, motivo original) --
     "Biotechnology",
     "Shell Companies",
     "Mortgage Finance",
     "Financial Conglomerates",
     "Capital Markets",
     "REIT - Mortgage",
+    # -- exclusión por AMBIGÜEDAD DE MAPEO (motivo distinto, añadido tras la
+    #    calibración de enero 2026): dos categorías Damodaran igual de
+    #    defendibles divergen >70% en el múltiplo, sin forma no arbitraria de
+    #    elegir una. Probado con dato real sobre MELI (Internet Retail):
+    #    1.187$ vs 2.176$ de fair value hipotético según la categoría elegida,
+    #    cotizando a 1.963$ -- la elección sola decide si sale barata o cara.
+    "Internet Retail",
+    "Insurance Brokers",
 }
 PS_MEDIANO_SECTOR = {
     "Technology": 6.0,
