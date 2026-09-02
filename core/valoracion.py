@@ -37,16 +37,20 @@ from config.settings import (
     DCF_WACC_MIN,
     DCF_WACC_MIN_PONDERADO,
     EV_EBITDA_INDUSTRIAS_EXCLUIDAS,
+    EV_EBITDA_INDUSTRIAS_SIN_REFERENCIA_FIABLE,
     EV_EBITDA_MEDIANO_INDUSTRIA,
     EV_EBITDA_MEDIANO_SECTOR,
     EXCLUSION_SUELO,
     EXCLUSION_TECHO,
     FORWARD_PER_MEDIANO_SECTOR,
+    INDUSTRIA_YF_A_DAMODARAN,
+    INDUSTRIAS_REIT,
     MARGEN_BRUTO_MEDIANO_SECTOR,
     MARGEN_NETO_MEDIANO_SECTOR,
     PEG_CRECIMIENTO_MAX,
     PEG_CRECIMIENTO_MIN,
     PEG_OBJETIVO,
+    PER_INDUSTRIAS_SIN_REFERENCIA_FIABLE,
     PER_MEDIANO_SECTOR,
     PESOS_CALIDAD,
     PESOS_FAIR_VALUE,
@@ -428,6 +432,19 @@ def valorar_ev_ebitda(paquete: dict) -> tuple[float | None, dict]:
     sector: un único 14x para Healthcare no distinguía biotecnología en
     crecimiento de una aseguradora médica o una farmacéutica madura) y solo
     cae al múltiplo de sector si la industria no está en la tabla.
+
+    Si SÍ hay múltiplo de industria pero la industria de Damodaran
+    correspondiente (`INDUSTRIA_YF_A_DAMODARAN`) está marcada en
+    `EV_EBITDA_INDUSTRIAS_SIN_REFERENCIA_FIABLE` (muestra pequeña, o el
+    múltiplo de "solo EBITDA positivo" diverge >50% del de "todas las
+    empresas" -- señal de que la muestra positiva ya no representa a la
+    industria real), el método se EXCLUYE directamente: NO cae a sector,
+    porque el problema no es que falte múltiplo de industria, es que el que
+    hay no es de fiar. Validado sobre la cesta de 29 tickers: sin este
+    filtro, GOOGL y META (Internet Content & Information → Software
+    (Internet), divergencia 3,3×) recibían un fair value vía EV/EBITDA de
+    914$ y 1.495$ respectivamente muy por encima de precio (ver
+    ESTADO_PROYECTO.md).
     """
     detalle = {"metodo": "EV/EBITDA", "notas": []}
     info = paquete.get("info", {})
@@ -435,9 +452,9 @@ def valorar_ev_ebitda(paquete: dict) -> tuple[float | None, dict]:
 
     if industria in EV_EBITDA_INDUSTRIAS_EXCLUIDAS:
         detalle["notas"].append(
-            f"«{industria}»: el EBITDA no es una base fiable para este tipo de negocio "
-            "(p. ej. biotecnología en rampa comercial, sin ingresos de producto estables); "
-            "método excluido en vez de forzar un múltiplo que no representa la realidad."
+            f"«{industria}»: el EBITDA no es una base fiable para este tipo de negocio, o dos "
+            "categorías de referencia igual de defendibles divergen demasiado para elegir una sin "
+            "arbitrariedad; método excluido en vez de forzar un múltiplo que no representa la realidad."
         )
         return None, detalle
 
@@ -448,6 +465,15 @@ def valorar_ev_ebitda(paquete: dict) -> tuple[float | None, dict]:
 
     multiplo = EV_EBITDA_MEDIANO_INDUSTRIA.get(industria)
     origen_multiplo = f"industria «{industria}»"
+    industria_damodaran = INDUSTRIA_YF_A_DAMODARAN.get(industria)
+    if es_valido(multiplo) and industria_damodaran and industria_damodaran in EV_EBITDA_INDUSTRIAS_SIN_REFERENCIA_FIABLE:
+        detalle["notas"].append(
+            f"Múltiplo de industria «{industria}» (→ Damodaran «{industria_damodaran}») marcado sin "
+            f"EV/EBITDA de referencia fiable "
+            f"({EV_EBITDA_INDUSTRIAS_SIN_REFERENCIA_FIABLE[industria_damodaran]}); método excluido "
+            "sin caer a sector, porque la industria sí tiene múltiplo, es que no es de fiar."
+        )
+        return None, detalle
     if not es_valido(multiplo):
         multiplo = EV_EBITDA_MEDIANO_SECTOR.get(paquete.get("sector"))
         origen_multiplo = "sector (sin múltiplo específico de industria)"
@@ -592,10 +618,24 @@ def valorar_per_razonable_forward(paquete: dict) -> tuple[float | None, dict]:
     mezclar un BPA futuro con un múltiplo del pasado (el mismo error, ya
     identificado y evitado aquí desde el principio, que tenía la antigua
     `valorar_multiplos`).
+
+    Antes de caer al sector, se comprueba la FIABILIDAD de la industria de
+    Damodaran a la que traduce la industria de yfinance
+    (`INDUSTRIA_YF_A_DAMODARAN`): si está en
+    `PER_INDUSTRIAS_SIN_REFERENCIA_FIABLE` (muestra pequeña, exceso de
+    empresas en pérdidas, o contradicción entre PER forward y PER agregado
+    -- ver `generar_tablas_damodaran.py`), el método se EXCLUYE en vez de
+    usar una referencia que la propia generación de tablas ya marcó como
+    dudosa. Validado sobre la cesta de 29 tickers: sin este filtro, XOM y
+    CVX (Oil/Gas Integrated, n=4 empresas) y NEM/FCX (Precious Metals/Metals
+    & Mining, >85% de empresas en pérdidas) heredaban un salto de upside que
+    era en gran parte ruido de la industria de referencia, no revalorización
+    real (ver ESTADO_PROYECTO.md).
     """
     detalle = {"metodo": "PER razonable × BPA forward", "notas": []}
     info = paquete.get("info", {})
     sector = paquete.get("sector")
+    industria = (paquete.get("industria") or "").strip()
 
     bpa_forward = primero_valido(info.get("forwardEps"))
     if not es_valido(bpa_forward) or bpa_forward <= 0:
@@ -609,6 +649,16 @@ def valorar_per_razonable_forward(paquete: dict) -> tuple[float | None, dict]:
         per_usado = per_historico
         origen = "histórico propio (pasa el filtro de estabilidad)"
     else:
+        industria_damodaran = INDUSTRIA_YF_A_DAMODARAN.get(industria)
+        if industria_damodaran and industria_damodaran in PER_INDUSTRIAS_SIN_REFERENCIA_FIABLE:
+            detalle["notas"].append(
+                f"PER histórico inestable y la industria «{industria}» (→ Damodaran "
+                f"«{industria_damodaran}») está marcada sin PER de referencia fiable "
+                f"({PER_INDUSTRIAS_SIN_REFERENCIA_FIABLE[industria_damodaran]}); método excluido "
+                "en vez de usar una referencia ya señalada como dudosa."
+            )
+            return None, detalle
+
         per_usado = FORWARD_PER_MEDIANO_SECTOR.get(sector)
         origen = (
             "mediano del sector, base forward (histórico inestable o insuficiente)"
@@ -795,7 +845,8 @@ def calcular_fair_value(paquete: dict) -> dict:
       B. PER razonable × BPA forward               (`valorar_per_razonable_forward`)
       C. PEG                                        (`valorar_peg`, sin cambios)
       D. EV/EBITDA sectorial/industria              (`valorar_ev_ebitda`, sin cambios)
-    más el consenso de analistas, con pesos fijos (`PESOS_FAIR_VALUE`).
+    más el consenso de analistas, con pesos fijos (`PESOS_FAIR_VALUE`). Ver
+    más abajo la excepción para REIT (A/B/C excluidos).
 
     La banda de cordura usa una ANCLA MIXTA: la mediana de los cuatro
     métodos propios junto con el consenso (si tiene cobertura suficiente),
@@ -804,10 +855,33 @@ def calcular_fair_value(paquete: dict) -> dict:
     circularidad. El consenso sigue sin pasar por la propia banda de
     cordura (no tiene sentido recortarlo contra un ancla de la que él mismo
     forma parte); los cuatro métodos propios sí.
+
+    EXCEPCIÓN REIT: si la industria está en `INDUSTRIAS_REIT`, A, B y C se
+    excluyen de raíz (ni siquiera se calculan) porque los tres dependen de
+    BPA -- GAAP, TTM o estimado -- y el BPA no es una magnitud económica
+    válida para un REIT (la amortización del inmueble se come el beneficio
+    contable sin reflejar la realidad del negocio; el estándar del sector es
+    FFO/AFFO). El fair value de un REIT se apoya solo en D (EV/EBITDA, no
+    distorsionado por amortización) y en el consenso -- `ponderar()` muestra
+    la cobertura reducida (35%) en vez de esconderla. Corrección PARCIAL y
+    deliberadamente conservadora mientras no se implemente P/FFO completo
+    (ver ESTADO_PROYECTO.md). Validado con datos reales: O pasa de +19,5% a
+    +7,0% de upside y PLD de -9,6% a -3,4% al quitar la contaminación de A/B/C.
     """
-    a_val, det_a = valorar_per_ttm_propio(paquete)
-    b_val, det_b = valorar_per_razonable_forward(paquete)
-    c_val, det_c = valorar_peg(paquete)
+    es_reit = (paquete.get("industria") or "").strip() in INDUSTRIAS_REIT
+
+    if es_reit:
+        nota_reit = [
+            "REIT: BPA GAAP no es una magnitud económica válida para este tipo de negocio "
+            "(la amortización del inmueble distorsiona el beneficio contable); método excluido."
+        ]
+        a_val, det_a = None, {"metodo": "PER histórico propio × BPA TTM", "notas": list(nota_reit)}
+        b_val, det_b = None, {"metodo": "PER razonable × BPA forward", "notas": list(nota_reit)}
+        c_val, det_c = None, {"metodo": "PEG", "notas": list(nota_reit)}
+    else:
+        a_val, det_a = valorar_per_ttm_propio(paquete)
+        b_val, det_b = valorar_per_razonable_forward(paquete)
+        c_val, det_c = valorar_peg(paquete)
     d_val, det_d = valorar_ev_ebitda(paquete)
 
     consenso = paquete.get("consenso", {})
